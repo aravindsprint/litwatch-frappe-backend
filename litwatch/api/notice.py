@@ -53,6 +53,9 @@ def get_client_notices(client_key=None, risk=None, status=None, bucket=None, sor
         filters["status"] = status
 
     today = getdate(nowdate())
+    if bucket and not status:
+        # A resolved notice is not overdue / due, whatever its due date.
+        filters["status"] = ["!=", "Resolved"]
     if bucket == "overdue":
         filters["due_date"] = ["<", today]
     elif bucket == "due7":
@@ -166,12 +169,12 @@ def get_client_notice_detail(client_key=None, id=None):
         "sourcePdfUrl": notice.source_pdf_url,
         "extractedByAi": bool(notice.get("extracted_by_ai")),
         "noticeData": nd,
+        "draftId": notice.get("draft_id"),
+        "draftStatus": notice.get("draft_status"),
+        "draftBody": notice.get("draft_body"),
     }
 
     # --- Timeline ---
-    # ASSUMPTION: a child table field called "timeline" on Litigation Notice,
-    # with child rows having "at" (datetime) and "event" (text) fields.
-    # Adjust the child doctype/fieldnames below to match your actual schema.
     timeline = []
     for row in notice.get("timeline") or []:
         timeline.append({
@@ -222,14 +225,16 @@ def get_client_notice_stats(client_key=None):
         fieldname="sum(amount)",
     ) or 0
 
+    open_filter = {"client": client_key, "status": ["!=", "Resolved"]}
+
     overdue = frappe.db.count(
         "Litigation Notice",
-        filters={"client": client_key, "due_date": ["<", today]},
+        filters={**open_filter, "due_date": ["<", today]},
     )
 
     due_soon = frappe.db.count(
         "Litigation Notice",
-        filters={"client": client_key, "due_date": ["between", [today, due_soon_end]]},
+        filters={**open_filter, "due_date": ["between", [today, due_soon_end]]},
     )
 
     return {
@@ -426,7 +431,11 @@ def draft_notice_response(id=None):
 
     draft_id = f"D-{frappe.generate_hash(length=4).upper()}"
 
-    frappe.db.set_value("Litigation Notice", id, "draft_id", draft_id)
+    frappe.db.set_value(
+        "Litigation Notice",
+        id,
+        {"draft_id": draft_id, "draft_status": "queued", "draft_body": None},
+    )
     frappe.db.commit()
 
     frappe.enqueue(
@@ -450,19 +459,91 @@ def generate_draft_content(draft_id, notice_id):
     try:
         notice = frappe.get_doc("Litigation Notice", notice_id)
 
-        # ASSUMPTION: your actual AI-drafting logic goes here.
+        # A newer draft request replaced this one; don't overwrite it.
+        if notice.draft_id != draft_id:
+            return
+
         draft_text = _call_ai_drafting_service(notice)
 
-        # ASSUMPTION: storing generated text needs a real destination field —
-        # frappe.db.set_value("Litigation Notice", notice_id, "<field>", draft_text)
+        frappe.db.set_value(
+            "Litigation Notice",
+            notice_id,
+            {"draft_body": draft_text, "draft_status": "ready"},
+        )
+        frappe.db.commit()
 
     except Exception:
+        frappe.db.rollback()
+        if frappe.db.get_value("Litigation Notice", notice_id, "draft_id") == draft_id:
+            frappe.db.set_value("Litigation Notice", notice_id, "draft_status", "failed")
+            frappe.db.commit()
         frappe.log_error(title="Draft generation failed", message=frappe.get_traceback())
 
 
+DRAFTING_PROMPT = """You are a senior Indian GST litigation advocate drafting a reply to a GST
+department notice on behalf of the taxpayer. Using the notice details provided, write a
+formal reply that: addresses the issuing officer correctly; cites the notice reference and
+date; responds to each issue / allegation point by point with the relevant provisions of the
+CGST Act and Rules; requests personal hearing where appropriate; and ends with a prayer and
+signature block placeholder. Do not invent facts, amounts or dates that are not in the input;
+use clearly marked placeholders like [to be confirmed] instead. Return the reply as clean
+HTML (paragraphs, headings, ordered lists) with no markdown and no code fences."""
+
+
 def _call_ai_drafting_service(notice):
-    """Placeholder — wire this up to your actual AI drafting integration."""
-    raise NotImplementedError("Wire up your AI drafting service call here")
+    """Generates the reply text with the same OpenAI setup used for extraction
+    (site_config: openai_api_key). Returns HTML."""
+    import json
+    import requests
+
+    api_key = frappe.conf.get("openai_api_key")
+    if not api_key:
+        raise Exception("openai_api_key is not set in site_config.json")
+
+    nd = notice.get("notice_data")
+    while isinstance(nd, str):
+        try:
+            nd = json.loads(nd)
+        except Exception:
+            nd = {}
+            break
+
+    summary = {
+        "notice_id": notice.name,
+        "gstin": notice.gstin,
+        "section": notice.section,
+        "notice_type": notice.notice_type,
+        "label": notice.label,
+        "state": notice.state,
+        "fy": notice.fy,
+        "amount": notice.amount,
+        "filed_date": str(notice.filed_date) if notice.filed_date else None,
+        "due_date": str(notice.due_date) if notice.due_date else None,
+    }
+
+    response = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": DRAFTING_PROMPT},
+                {
+                    "role": "user",
+                    "content": "Notice summary:\n"
+                    + json.dumps(summary, default=str, indent=1)
+                    + "\n\nFull extracted notice data:\n"
+                    + json.dumps(nd or {}, default=str)[:60000],
+                },
+            ],
+        },
+        timeout=180,
+    )
+    result = response.json()
+    if "choices" not in result:
+        raise Exception(f"OpenAI API error: {result.get('error', result)}")
+
+    return result["choices"][0]["message"]["content"].strip()
 
 
 @frappe.whitelist(methods=["POST"])
@@ -706,9 +787,6 @@ def build_consolidated_response(notice, extracted_by_ai=None):
 
 
 
-def _call_ai_drafting_service(notice):
-    """Placeholder — wire this up to your actual AI drafting integration."""
-    raise NotImplementedError("Wire up your AI drafting service call here")
 
 
 
@@ -870,9 +948,11 @@ def generate_notice_draft(notice_id):
         draft_text = _call_ai_drafting_service(notice)
 
         if draft_text:
-            notice.db_set("draft_id", frappe.generate_hash(length=10))
-            # If you have a field for the draft body, set it here:
-            # notice.db_set("<draft_body_field>", draft_text)
+            notice.db_set({
+                "draft_id": f"D-{frappe.generate_hash(length=4).upper()}",
+                "draft_body": draft_text,
+                "draft_status": "ready",
+            })
             frappe.db.commit()
 
         return draft_text
@@ -966,15 +1046,11 @@ def approve_and_send_notice(id=None, draftId=None, editedBody=None):
             _("Draft ID mismatch: expected {0}, got {1}").format(current_draft, draftId)
         )
 
-    # --- Persist ---
-    updates = {"status": "Filed"}
-
-    if editedBody:
-        updates["response_body"] = editedBody
-        # ^ Confirm this field exists on Litigation Notice. If not, add it or
-        #   comment this line out.
-
-    frappe.db.set_value("Litigation Notice", id, updates)
+    # --- Persist (doc.save so the controller records the status change) ---
+    notice = frappe.get_doc("Litigation Notice", id)
+    notice.status = "Filed"
+    notice.response_body = editedBody or notice.draft_body
+    notice.save(ignore_permissions=True)
     frappe.db.commit()
 
     # --- Return RAW JSON (no "message" wrapper) ---

@@ -115,51 +115,84 @@ def get_clients():
     return clients
 
 
-@frappe.whitelist(methods=["POST"])
-def create_client(name, pan=None, sector=None, firstGstin=None):
-    words = name.split()
-    initials = "".join(w[0].upper() for w in words if w[0].isalpha())
-    client_code = initials
+def _resolve_firm_profile():
+    firm_profile = frappe.defaults.get_user_default("firm_profile")
+    if firm_profile and frappe.db.exists("Firm Profile", firm_profile):
+        return firm_profile
 
+    existing = frappe.db.get_value("Client", {"firm_profile": ["is", "set"]}, "firm_profile")
+    if existing and frappe.db.exists("Firm Profile", existing):
+        return existing
+
+    first = frappe.db.get_value("Firm Profile", {}, "name", order_by="creation asc")
+    if first:
+        return first
+
+    frappe.throw(_("No Firm Profile exists. Create one before adding clients."))
+
+
+def _onboarding_stages():
+    options = frappe.get_meta("Client").get_field("onboarding_stage").options or ""
+    return [o for o in options.split("\n") if o]
+
+
+@frappe.whitelist(methods=["POST"])
+def create_client(name=None, pan=None, sector=None, firstGstin=None):
+    import re
+    from frappe.utils import nowdate
+
+    name = (name or "").strip()
+    if not name:
+        frappe.throw(_("name is required"))
+
+    firstGstin = (firstGstin or "").strip().upper() or None
+    if firstGstin:
+        if not re.fullmatch(r"[0-9]{2}[A-Z0-9]{13}", firstGstin):
+            frappe.throw(_("Invalid GSTIN: {0}").format(firstGstin))
+        owner = frappe.db.get_value("GST Registration", firstGstin, "client")
+        if owner:
+            frappe.throw(_("GSTIN {0} is already registered to client {1}").format(firstGstin, owner))
+
+    initials = "".join(w[0].upper() for w in name.split() if w and w[0].isalnum()) or "CL"
+    client_code = initials
     suffix = 1
-    base_code = client_code
     while frappe.db.exists("Client", client_code):
         suffix += 1
-        client_code = f"{base_code}{suffix}"
+        client_code = f"{initials}{suffix}"
 
-    firm_profile = frappe.defaults.get_user_default("firm_profile")
-    if not firm_profile:
-        existing = frappe.db.get_value("Client", {"firm_profile": ["!=", ""]}, "firm_profile")
-        firm_profile = existing or "LitWatch Law Firm"
-
+    stages = _onboarding_stages()
     client = frappe.get_doc({
         "doctype": "Client",
         "client_code": client_code,
         "client_name": name,
         "short_name": client_code,
-        "firm_profile": firm_profile,
+        "firm_profile": _resolve_firm_profile(),
         "pan": pan,
         "sector": sector,
-        "status": "Active"
+        "status": "Active",
+        "onboarding_stage": stages[0] if stages else None,
+        "onboarding_date": nowdate(),
     })
     client.insert(ignore_permissions=True)
 
+    registrations = []
     if firstGstin:
-        if not frappe.db.exists("GST Registration", firstGstin):
-            frappe.get_doc({
-                "doctype": "GST Registration",
-                "gstin": firstGstin,
-                "client": client.name
-            }).insert(ignore_permissions=True)
+        reg = frappe.get_doc({
+            "doctype": "GST Registration",
+            "gstin": firstGstin,
+            "client": client.name,
+            "consent_status": "inactive",
+        }).insert(ignore_permissions=True)
+        registrations.append({"gstin": reg.name, "state": reg.state, "consent": reg.consent_status})
 
     frappe.db.commit()
 
-    frappe.response.http_status_code = 201
+    frappe.local.response.http_status_code = 201
     return {
         "key": client.name,
         "name": client.client_name,
         "notices": 0,
-        "registrations": []
+        "registrations": registrations,
     }
 
 # ---------------------------------------------------------------------------
@@ -298,11 +331,8 @@ def get_client_pipeline():
         })
 
     # Sort by stage (custom order), then by date ascending
-    stage_order = {
-        "KYC in progress": 1,
-        "GSTIN pending": 2,
-        "Agreement signed": 3,
-    }
+    # Order = order of the options on Client.onboarding_stage
+    stage_order = {stage: i for i, stage in enumerate(_onboarding_stages(), start=1)}
     result.sort(key=lambda r: (
         stage_order.get(r["stage"], 99),
         r.get("when") or "",
@@ -358,6 +388,10 @@ def update_client_pipeline_stage(id=None, stage=None):
 
     if not stage:
         frappe.throw(_("stage is required"))
+
+    valid_stages = _onboarding_stages()
+    if stage not in valid_stages:
+        frappe.throw(_("Invalid stage: {0}. Must be one of {1}").format(stage, valid_stages))
 
     if not frappe.db.exists("Client", id):
         # Try client_code fallback

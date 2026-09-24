@@ -11,7 +11,8 @@
   "otp_request_id",
   "otp_sent_to",
   "status",
-  "requested_at"
+  "requested_at",
+  "expires_at"
  ],
  "fields": [
   {
@@ -46,12 +47,17 @@
    "fieldtype": "Datetime",
    "in_list_view": 1,
    "label": "Requested At"
+  },
+  {
+   "fieldname": "expires_at",
+   "fieldtype": "Datetime",
+   "label": "Expires At"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 11:00:11.432000",
+ "modified": "2026-09-24 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "GST OTP Request",

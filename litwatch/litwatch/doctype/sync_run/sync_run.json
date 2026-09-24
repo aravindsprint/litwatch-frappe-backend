@@ -10,7 +10,9 @@
   "run_id",
   "gstins_queued",
   "started_at",
-  "status"
+  "status",
+  "gstins_done",
+  "finished_at"
  ],
  "fields": [
   {
@@ -38,12 +40,23 @@
    "in_list_view": 1,
    "label": "Status",
    "options": "queued\nrunning\ndone\nfailed"
+  },
+  {
+   "fieldname": "gstins_done",
+   "fieldtype": "Int",
+   "label": "GSTINs Done",
+   "default": "0"
+  },
+  {
+   "fieldname": "finished_at",
+   "fieldtype": "Datetime",
+   "label": "Finished At"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 11:00:11.863563",
+ "modified": "2026-09-24 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Sync Run",

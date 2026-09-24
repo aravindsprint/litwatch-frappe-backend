@@ -10,7 +10,9 @@
   "sync_time",
   "seen",
   "found",
-  "status"
+  "status",
+  "sync_run",
+  "error"
  ],
  "fields": [
   {
@@ -41,13 +43,24 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "ok\nfailed"
+   "options": "ok\nfailed\nskipped"
+  },
+  {
+   "fieldname": "sync_run",
+   "fieldtype": "Link",
+   "label": "Sync Run",
+   "options": "Sync Run"
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Error"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 11:00:11.645180",
+ "modified": "2026-09-24 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "GST Sync Log",

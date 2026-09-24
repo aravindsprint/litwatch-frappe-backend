@@ -49,7 +49,8 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Consent Status",
-   "options": "active\npending\nexpired"
+   "options": "inactive\npending\nactive\nexpired",
+   "default": "inactive"
   },
   {
    "fieldname": "valid_until",
@@ -71,7 +72,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 11:00:11.269255",
+ "modified": "2026-09-24 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "GST Registration",

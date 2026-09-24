@@ -26,7 +26,12 @@
   "extracted_by_ai",
   "draft_id",
   "timeline",
-  "resolved_on"
+  "resolved_on",
+  "portal_ref",
+  "notice_data",
+  "draft_status",
+  "draft_body",
+  "response_body"
  ],
  "fields": [
   {
@@ -148,12 +153,42 @@
    "fieldtype": "Datetime",
    "label": "Resolved On",
    "read_only": 1
+  },
+  {
+   "fieldname": "portal_ref",
+   "fieldtype": "Data",
+   "label": "Portal Reference",
+   "unique": 1,
+   "read_only": 1,
+   "description": "Unique id of the notice on the GST portal. Used to skip duplicates during sync."
+  },
+  {
+   "fieldname": "notice_data",
+   "fieldtype": "JSON",
+   "label": "Notice Data"
+  },
+  {
+   "fieldname": "draft_status",
+   "fieldtype": "Select",
+   "label": "Draft Status",
+   "options": "\nqueued\nready\nfailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "draft_body",
+   "fieldtype": "Text Editor",
+   "label": "Draft Body"
+  },
+  {
+   "fieldname": "response_body",
+   "fieldtype": "Text Editor",
+   "label": "Response Body (Approved)"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 14:15:28.772495",
+ "modified": "2026-09-24 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Litigation Notice",
