@@ -14,7 +14,9 @@
   "report_format",
   "job_id",
   "download_url",
-  "status"
+  "status",
+  "requested_by",
+  "error"
  ],
  "fields": [
   {
@@ -69,12 +71,25 @@
    "in_list_view": 1,
    "label": "Status",
    "options": "queued\ndone\nfailed"
+  },
+  {
+   "fieldname": "requested_by",
+   "fieldtype": "Link",
+   "label": "Requested By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Error",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 11:00:56.470950",
+ "modified": "2026-09-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Report Request",

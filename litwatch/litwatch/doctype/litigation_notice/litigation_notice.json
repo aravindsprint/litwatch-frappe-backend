@@ -31,7 +31,8 @@
   "notice_data",
   "draft_status",
   "draft_body",
-  "response_body"
+  "response_body",
+  "extraction_confirmed"
  ],
  "fields": [
   {
@@ -183,12 +184,20 @@
    "fieldname": "response_body",
    "fieldtype": "Text Editor",
    "label": "Response Body (Approved)"
+  },
+  {
+   "fieldname": "extraction_confirmed",
+   "fieldtype": "Check",
+   "label": "Extraction Confirmed",
+   "default": "0",
+   "read_only": 1,
+   "description": "Set when the Review Queue item is confirmed. Drafting can require this."
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-24 12:00:00.000000",
+ "modified": "2026-09-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Litigation Notice",

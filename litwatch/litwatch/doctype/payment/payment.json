@@ -21,7 +21,13 @@
   "igst",
   "interest",
   "penalty",
-  "tax_breakdown"
+  "tax_breakdown",
+  "client",
+  "payment_date",
+  "amount_paid",
+  "receipt",
+  "remarks",
+  "recorded_by"
  ],
  "fields": [
   {
@@ -109,12 +115,48 @@
    "fieldtype": "Table",
    "label": "Tax Breakdown",
    "options": "Tax Breakdown"
+  },
+  {
+   "fieldname": "client",
+   "fieldtype": "Link",
+   "label": "Client",
+   "options": "Client",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "payment_date",
+   "fieldtype": "Date",
+   "label": "Payment Date",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "amount_paid",
+   "fieldtype": "Currency",
+   "label": "Amount Paid",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "receipt",
+   "fieldtype": "Attach",
+   "label": "Receipt / Challan"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  },
+  {
+   "fieldname": "recorded_by",
+   "fieldtype": "Link",
+   "label": "Recorded By",
+   "options": "User",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 14:32:17.794814",
+ "modified": "2026-09-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Payment",

@@ -141,11 +141,11 @@ def create_client(name=None, pan=None, sector=None, firstGstin=None):
     import re
     from frappe.utils import nowdate
 
-    name = (name or "").strip()
+    name = str(name or "").strip()
     if not name:
         frappe.throw(_("name is required"))
 
-    firstGstin = (firstGstin or "").strip().upper() or None
+    firstGstin = str(firstGstin or "").strip().upper() or None
     if firstGstin:
         if not re.fullmatch(r"[0-9]{2}[A-Z0-9]{13}", firstGstin):
             frappe.throw(_("Invalid GSTIN: {0}").format(firstGstin))
@@ -167,8 +167,8 @@ def create_client(name=None, pan=None, sector=None, firstGstin=None):
         "client_name": name,
         "short_name": client_code,
         "firm_profile": _resolve_firm_profile(),
-        "pan": pan,
-        "sector": sector,
+        "pan": str(pan).strip().upper() if pan else None,
+        "sector": str(sector).strip() if sector else None,
         "status": "Active",
         "onboarding_stage": stages[0] if stages else None,
         "onboarding_date": nowdate(),

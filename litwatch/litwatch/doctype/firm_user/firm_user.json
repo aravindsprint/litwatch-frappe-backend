@@ -12,7 +12,8 @@
   "icai_membership_number",
   "email",
   "mobile",
-  "notice_inbox_email"
+  "notice_inbox_email",
+  "firm_profile"
  ],
  "fields": [
   {
@@ -53,12 +54,18 @@
    "fieldtype": "Data",
    "label": "Notice Inbox Email",
    "read_only": 1
+  },
+  {
+   "fieldname": "firm_profile",
+   "fieldtype": "Link",
+   "label": "Firm Profile",
+   "options": "Firm Profile"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 10:59:08.729039",
+ "modified": "2026-09-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Firm User",

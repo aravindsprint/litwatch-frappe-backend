@@ -19,7 +19,10 @@
   "urgent",
   "why",
   "review_flags",
-  "draft_id"
+  "draft_id",
+  "status",
+  "confirmed_by",
+  "confirmed_on"
  ],
  "fields": [
   {
@@ -98,12 +101,34 @@
    "fieldname": "draft_id",
    "fieldtype": "Data",
    "label": "Draft ID"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Pending\nConfirmed",
+   "default": "Pending",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "confirmed_by",
+   "fieldtype": "Link",
+   "label": "Confirmed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "confirmed_on",
+   "fieldtype": "Datetime",
+   "label": "Confirmed On",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 11:00:56.253657",
+ "modified": "2026-09-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Review Queue Item",

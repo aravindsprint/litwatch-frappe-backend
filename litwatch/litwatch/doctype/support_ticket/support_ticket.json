@@ -9,7 +9,9 @@
   "subject",
   "message",
   "status",
-  "raised_by"
+  "raised_by",
+  "client",
+  "attachment"
  ],
  "fields": [
   {
@@ -37,12 +39,23 @@
    "in_list_view": 1,
    "label": "Raised By",
    "options": "User"
+  },
+  {
+   "fieldname": "client",
+   "fieldtype": "Link",
+   "label": "Client",
+   "options": "Client"
+  },
+  {
+   "fieldname": "attachment",
+   "fieldtype": "Attach",
+   "label": "Attachment"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 11:17:45.907557",
+ "modified": "2026-09-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Support Ticket",

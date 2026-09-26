@@ -9,7 +9,11 @@
   "flag_label",
   "detail",
   "corrected_value",
-  "resolved"
+  "resolved",
+  "field_key",
+  "original_value",
+  "corrected_by",
+  "corrected_on"
  ],
  "fields": [
   {
@@ -35,13 +39,38 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Resolved"
+  },
+  {
+   "fieldname": "field_key",
+   "fieldtype": "Data",
+   "label": "Field Key",
+   "description": "Path of the field inside the notice's notice_data, e.g. demand.total"
+  },
+  {
+   "fieldname": "original_value",
+   "fieldtype": "Small Text",
+   "label": "Original Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "corrected_by",
+   "fieldtype": "Link",
+   "label": "Corrected By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "corrected_on",
+   "fieldtype": "Datetime",
+   "label": "Corrected On",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-09-09 11:00:56.084292",
+ "modified": "2026-09-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Review Flag",

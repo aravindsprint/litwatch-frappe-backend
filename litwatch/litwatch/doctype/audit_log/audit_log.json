@@ -10,7 +10,11 @@
   "actor",
   "action",
   "detail",
-  "kind"
+  "kind",
+  "user",
+  "client",
+  "reference_doctype",
+  "reference_name"
  ],
  "fields": [
   {
@@ -42,12 +46,38 @@
    "in_list_view": 1,
    "label": "Kind",
    "options": "sync\nai\nsystem\nuser\nerror"
+  },
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "label": "User",
+   "options": "User",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "client",
+   "fieldtype": "Link",
+   "label": "Client",
+   "options": "Client",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "Reference DocType",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Reference Name",
+   "options": "reference_doctype"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 11:01:36.020006",
+ "modified": "2026-09-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Audit Log",
