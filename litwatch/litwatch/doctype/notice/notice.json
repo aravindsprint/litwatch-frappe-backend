@@ -28,7 +28,9 @@
   "document_files",
   "review",
   "validation",
-  "risk_mapping"
+  "risk_mapping",
+  "analysis",
+  "draft"
  ],
  "fields": [
   {
@@ -147,12 +149,22 @@
    "fieldname": "risk_mapping",
    "fieldtype": "JSON",
    "label": "Risk Mapping"
+  },
+  {
+   "fieldtype": "JSON",
+   "fieldname": "analysis",
+   "label": "Analysis"
+  },
+  {
+   "fieldtype": "JSON",
+   "fieldname": "draft",
+   "label": "Draft"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-17 00:00:00.000000",
+ "modified": "2026-09-27 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Notice",
