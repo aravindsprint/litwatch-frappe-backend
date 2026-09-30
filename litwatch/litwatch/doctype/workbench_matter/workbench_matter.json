@@ -30,10 +30,9 @@
  "fields": [
   {
    "fieldname": "notice",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Notice",
-   "options": "Litigation Notice",
    "reqd": 1
   },
   {
@@ -146,7 +145,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-15 09:48:18.677958",
+ "modified": "2026-09-30 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Workbench Matter",

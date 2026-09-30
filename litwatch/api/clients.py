@@ -66,22 +66,11 @@ def get_clients():
     for c in clients:
         client_key = c["key"]
 
-        c["notices"] = frappe.db.count(
-            "Litigation Notice", filters={"client": client_key}
-        )
-
-        c["demand"] = frappe.db.get_value(
-            "Litigation Notice", {"client": client_key}, "sum(amount)"
-        ) or 0
-
-        c["overdue"] = frappe.db.count(
-            "Litigation Notice",
-            filters={
-                "client": client_key,
-                "due_date": ["<", today],
-                "status": ["!=", "Resolved"],
-            },
-        )
+        # Litigation Notice was removed; notice metrics stay in the
+        # response (as zeros) so the frontend shape does not change.
+        c["notices"] = 0
+        c["demand"] = 0
+        c["overdue"] = 0
 
         registrations = frappe.get_all(
             "GST Registration",
@@ -91,26 +80,8 @@ def get_clients():
         )
         c["registrations"] = registrations
 
-        received = []
-        resolved = []
-        for m in months:
-            received.append(frappe.db.count(
-                "Litigation Notice",
-                filters={
-                    "client": client_key,
-                    "filed_date": ["between", [m["start"], m["end"]]],
-                },
-            ))
-            resolved.append(frappe.db.count(
-                "Litigation Notice",
-                filters={
-                    "client": client_key,
-                    "resolved_on": ["between", [m["start"], m["end"]]],
-                },
-            ))
-
-        c["trendData"] = received
-        c["resolvedData"] = resolved
+        c["trendData"] = [0] * len(months)
+        c["resolvedData"] = [0] * len(months)
 
     return clients
 

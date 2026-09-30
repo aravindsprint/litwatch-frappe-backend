@@ -4,13 +4,14 @@ import frappe
 def execute():
 	"""Existing Resolved notices have no resolved_on, so trend charts show 0 resolved.
 	Use the last modified time as the best available approximation."""
-	frappe.db.sql(
-		"""
-		UPDATE `tabLitigation Notice`
-		SET resolved_on = modified
-		WHERE status = 'Resolved' AND resolved_on IS NULL
-		"""
-	)
+	if frappe.db.table_exists("Litigation Notice"):  # removed later
+		frappe.db.sql(
+			"""
+			UPDATE `tabLitigation Notice`
+			SET resolved_on = modified
+			WHERE status = 'Resolved' AND resolved_on IS NULL
+			"""
+		)
 	frappe.db.sql(
 		"""
 		UPDATE `tabGST Registration`

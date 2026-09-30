@@ -92,12 +92,6 @@ def get_gstin_connections():
 
 	state_codes = dict(frappe.get_all("State", fields=["name", "state_code"], as_list=True))
 	client_codes = dict(frappe.get_all("Client", fields=["name", "client_code"], as_list=True))
-	notice_counts = dict(
-		frappe.db.sql(
-			"""SELECT gstin, COUNT(*) FROM `tabLitigation Notice`
-			WHERE gstin IS NOT NULL GROUP BY gstin"""
-		)
-	)
 
 	today = getdate(nowdate())
 	result = []
@@ -127,7 +121,7 @@ def get_gstin_connections():
 				"consent": consent,
 				"validUntil": str(reg.valid_until) if reg.valid_until else None,
 				"lastChecked": _iso(reg.last_checked),
-				"notices": notice_counts.get(reg.name, 0),
+				"notices": 0,  # Litigation Notice was removed
 			}
 		)
 	return result
@@ -245,51 +239,16 @@ def _write_sync_log(gstin, seen, found, status, sync_run=None, error=None):
 	).insert(ignore_permissions=True)
 
 
-def _insert_portal_notice(reg, n):
-	notice_type = n.get("notice_type")
-	if notice_type and not frappe.db.exists("Notice Type", notice_type):
-		notice_type = None
-
-	doc = frappe.get_doc(
-		{
-			"doctype": "Litigation Notice",
-			"notice_id": f"N-{frappe.generate_hash(length=6).upper()}",
-			"client": reg.client,
-			"gstin": reg.name,
-			"portal_ref": n["portal_ref"],
-			"state": reg.state,
-			"city": n.get("city") or reg.city,
-			"section": n.get("section"),
-			"label": n.get("label"),
-			"notice_type": notice_type,
-			"fy": n.get("fy"),
-			"amount": n.get("amount"),
-			"filed_date": n.get("filed_date"),
-			"due_date": n.get("due_date"),
-			"status": "Under review",
-			"extracted_by_ai": 0,
-			"notice_data": n.get("notice_data") or {},
-		}
-	)
-	doc.append("timeline", {"at": now_datetime(), "event": "Imported from GST portal"})
-	doc.insert(ignore_permissions=True)
-
-
 def _sync_one(reg, sync_run=None):
-	"""Pull notices for one registration, insert new ones, write GST Sync Log.
-	Returns {seen, found, status}."""
+	"""Pull notices for one registration and write GST Sync Log.
+	Returns {seen, found, status}.
+
+	Litigation Notice was removed, so portal notices are counted but not stored.
+	When the Adaequare integration is written, store them in the chosen doctype
+	here and count the new ones in `found`."""
 	portal_notices = gst_portal.fetch_notices(reg.name) or []
 	seen = len(portal_notices)
 	found = 0
-
-	for n in portal_notices:
-		ref = n.get("portal_ref")
-		if not ref:
-			continue
-		if frappe.db.exists("Litigation Notice", {"portal_ref": ref}):
-			continue
-		_insert_portal_notice(reg, n)
-		found += 1
 
 	reg.db_set("last_checked", now_datetime(), update_modified=False)
 	_write_sync_log(reg.name, seen, found, "ok", sync_run=sync_run)
@@ -418,10 +377,7 @@ def get_sync_usage():
 
 	week_start = frappe.utils.add_days(today_d, -today_d.weekday())
 	week_end = frappe.utils.add_days(week_start, 6)
-	notices_this_week = frappe.db.count(
-		"Litigation Notice",
-		filters={"creation": ["between", [f"{week_start} 00:00:00", f"{week_end} 23:59:59"]]},
-	)
+	notices_this_week = 0  # Litigation Notice was removed
 
 	skipped_runs = frappe.db.count("GST Sync Log", filters={"status": "skipped"})
 

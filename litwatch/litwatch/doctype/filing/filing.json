@@ -39,10 +39,9 @@
   },
   {
    "fieldname": "notice",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Notice",
-   "options": "Litigation Notice",
    "reqd": 1
   },
   {
@@ -105,7 +104,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 14:48:56.759445",
+ "modified": "2026-09-30 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Filing",
