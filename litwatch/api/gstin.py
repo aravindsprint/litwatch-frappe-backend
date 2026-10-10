@@ -167,6 +167,7 @@ def connect_gstin(gstin=None, portalUserId=None):
 		frappe.throw(_("portalUserId is required"))
 
 	reg = _get_registration(gstin)
+	gst_portal.ensure_settings(reg.name)  # own Adaequare Settings record (shows its OTP)
 
 	result = gst_portal.request_otp(gstin, portalUserId)
 	reg.portal_user_id = portalUserId
@@ -249,6 +250,7 @@ def resend_gstin_otp(gstin=None):
 	if not reg.portal_user_id:
 		frappe.throw(_("GSTIN {0} has no portal user id. Call connect first.").format(gstin))
 
+	gst_portal.ensure_settings(reg.name)
 	result = gst_portal.request_otp(gstin, reg.portal_user_id)
 	if result["session_active"]:
 		_activate(reg)

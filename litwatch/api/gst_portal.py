@@ -104,6 +104,34 @@ def _own_record(gstin):
 	return gstin if gstin and frappe.db.exists("Adaequare Settings", gstin) else None
 
 
+def ensure_settings(gstin):
+	"""Give a GSTIN its own Adaequare Settings record the first time it is connected,
+	copying the GSP app (client id, secret, environment, base URL) from the first
+	active record. Does nothing when the GSTIN already has a record or no active
+	record exists (e.g. mock mode only). Returns the record name or None."""
+	gstin = str(gstin or "").strip().upper()
+	if not gstin or not frappe.db.exists("GSTIN", gstin):
+		return None
+	if frappe.db.exists("Adaequare Settings", gstin):
+		return gstin
+	template = frappe.db.get_value("Adaequare Settings", {"is_active": 1}, "name", order_by="creation asc")
+	if not template:
+		return None
+	src = frappe.get_doc("Adaequare Settings", template)
+	frappe.get_doc(
+		{
+			"doctype": "Adaequare Settings",
+			"gstin": gstin,
+			"client_id": src.client_id,
+			"client_secret": src.get_password("client_secret"),
+			"environment": src.get("environment"),
+			"base_url": src.get("base_url"),
+			"is_active": 1,
+		}
+	).insert(ignore_permissions=True)
+	return gstin
+
+
 def saved_otp(gstin):
 	"""OTP in the GSTIN's Adaequare Settings record, if any."""
 	name = _own_record(gstin)
