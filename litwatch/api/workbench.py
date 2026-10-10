@@ -24,19 +24,12 @@ def get_matter_workbench(client_key=None, id=None):
         frappe.throw(_("id is required"))
 
     # ─────────────────────────────────────────────
-    # 2. Resolve client (by client_code, fall back to doc name)
+    # 2. Resolve the Business (Business ID, or an old short code like "GT")
     # ─────────────────────────────────────────────
-    client_name = frappe.db.get_value("Client", {"client_code": client_key}, "name")
-    if not client_name and frappe.db.exists("Client", client_key):
-        client_name = client_key
+    from litwatch.api.clients import _resolve_business
 
-    if not client_name:
-        frappe.throw(
-            _("Client {0} not found").format(client_key),
-            frappe.DoesNotExistError,
-        )
-
-    client_display = frappe.db.get_value("Client", client_name, "client_name")
+    client_name = _resolve_business(client_key)
+    client_display = frappe.db.get_value("Business", client_name, "business_name")
 
     # ─────────────────────────────────────────────
     # 3. Resolve matter (by doc name or matter_id)
@@ -55,7 +48,7 @@ def get_matter_workbench(client_key=None, id=None):
     matter = frappe.get_doc("Workbench Matter", matter_name)
     matter.load_from_db()
 
-    if matter.client != client_name:
+    if str(matter.client or "") != str(client_name):
         frappe.throw(
             _("Matter {0} not found for client {1}").format(id, client_key),
             frappe.DoesNotExistError,

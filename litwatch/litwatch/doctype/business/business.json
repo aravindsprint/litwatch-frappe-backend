@@ -16,7 +16,9 @@
   "onboarding_stage",
   "onboarding_date",
   "default_consultant",
-  "notes"
+  "notes",
+  "client_contacts",
+  "client_addresses"
  ],
  "fields": [
   {
@@ -86,12 +88,24 @@
    "fieldname": "notes",
    "fieldtype": "Text",
    "label": "Notes"
+  },
+  {
+   "fieldname": "client_contacts",
+   "fieldtype": "Table",
+   "label": "Contacts",
+   "options": "Client Contact"
+  },
+  {
+   "fieldname": "client_addresses",
+   "fieldtype": "Table",
+   "label": "Addresses",
+   "options": "Client Address"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-02 12:00:00.000000",
+ "modified": "2026-10-02 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Business",

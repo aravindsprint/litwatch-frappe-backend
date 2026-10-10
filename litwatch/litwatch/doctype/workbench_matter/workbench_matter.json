@@ -25,7 +25,8 @@
   "demand_interest",
   "demand_penalty",
   "issues",
-  "validation_result"
+  "validation_result",
+  "client"
  ],
  "fields": [
   {
@@ -140,12 +141,19 @@
    "fieldtype": "Link",
    "label": "Validation Result",
    "options": "Workbench Validation Result"
+  },
+  {
+   "fieldname": "client",
+   "fieldtype": "Link",
+   "label": "Business",
+   "options": "Business",
+   "in_standard_filter": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-30 18:00:00.000000",
+ "modified": "2026-10-02 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Workbench Matter",
