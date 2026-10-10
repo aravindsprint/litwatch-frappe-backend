@@ -14,7 +14,9 @@ class AdaequareSettings(Document):
 		if self.is_shared:
 			self.name = SHARED_NAME
 		else:
-			self.name = (self.default_gstin or "").strip().upper()
+			if not self.default_gstin:
+				frappe.throw(_("Enter the GSTIN this client-specific app is for, or tick Shared."))
+			self.name = self.default_gstin.strip().upper()
 
 	def validate(self):
 		if self.default_gstin:

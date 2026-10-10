@@ -10,7 +10,6 @@
   "is_shared",
   "client_id",
   "client_secret",
-  "user_id",
   "default_gstin",
   "environment",
   "is_active",
@@ -41,19 +40,13 @@
    "reqd": 1
   },
   {
-   "fieldname": "user_id",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "User ID",
-   "reqd": 1
-  },
-  {
    "fieldname": "default_gstin",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Default GSTIN",
-   "reqd": 1,
-   "description": "For a GSTIN-specific record this is also its name. On the shared record it is only a default."
+   "label": "GSTIN (client-specific app)",
+   "description": "Only for a client that must use its own GSP app: this record is named by this GSTIN and used for it only.",
+   "depends_on": "eval:!doc.is_shared",
+   "mandatory_depends_on": "eval:!doc.is_shared"
   },
   {
    "default": "Live",
@@ -92,7 +85,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-05 12:00:00.000000",
+ "modified": "2026-10-05 15:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Adaequare Settings",
