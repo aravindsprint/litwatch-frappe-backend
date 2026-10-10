@@ -4,7 +4,7 @@ import frappe
 def execute():
 	"""Client APIs now run on Business. Make sure every Client has a Business
 	(matched by name, as the GSTIN migration did), copy the client fields, and
-	re-point active-client user defaults and imported notices to the Business ID."""
+	re-point active-client user defaults to the Business ID."""
 	if not frappe.db.table_exists("Client"):
 		return
 
@@ -43,11 +43,9 @@ def execute():
 			"UPDATE `tabDefaultValue` SET defvalue = %s WHERE defkey = 'active_client' AND defvalue = %s",
 			(business_id, c.name),
 		)
-		# Notices imported before the move carried the Client key as business_id
-		frappe.db.sql(
-			"UPDATE `tabNotice` SET business_id = %s WHERE business_id = %s",
-			(business_id, c.name),
-		)
+		# Notice.business_id is not touched here: move_gst_registrations_to_gstin already
+		# re-pointed imported notices, and by now they hold Business IDs, which can look
+		# like Client keys (e.g. "1").
 
 	frappe.db.commit()
 	frappe.clear_cache()
