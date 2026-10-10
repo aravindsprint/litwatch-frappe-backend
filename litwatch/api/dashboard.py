@@ -28,6 +28,7 @@ from frappe.utils import cint, getdate, nowdate
 # ---------------------------------------------------------------------------
 DUE_DATE_KEYS = [
 	("portal_metadata", "dueDateOfReplyIso"), ("portal_metadata", "dueDateOfReply"),
+	("notice", "explicit_reply_due_date"), ("notice", "calculated_reply_due_date"),
 	("notice", "due_date"), ("notice", "dueDate"), ("notice", "reply_due_date"),
 	("notice", "due_date_of_reply"), ("notice", "replyDueDate"),
 	("hearing", "reply_due_date"), ("extensions", "extended_due_date"),
@@ -35,7 +36,7 @@ DUE_DATE_KEYS = [
 ]
 ISSUE_DATE_KEYS = [
 	("portal_metadata", "dateOfIssueIso"), ("portal_metadata", "dateOfIssue"),
-	("notice", "date_of_issue"), ("notice", "issue_date"), ("notice", "dateOfIssue"),
+	("notice", "issue_date"), ("notice", "date_of_issue"), ("notice", "dateOfIssue"),
 	("notice", "date"), ("document_identity", "date_of_issue"),
 ]
 RISK_KEYS = [
@@ -50,11 +51,16 @@ DEMAND_TOTAL_KEYS = [
 	("demand", "grand_total"), ("demand", "total_amount"), ("demand", "amount"),
 	("notice", "total_demand"), ("notice", "demand"), ("analysis", "total_demand"),
 ]
-DEMAND_PART_KEYS = ["tax", "interest", "penalty", "late_fee", "fee", "others"]  # summed when no total
+DEMAND_PART_KEYS = ["tax_demanded", "tax", "interest", "penalty", "fees", "late_fee", "fee", "others"]  # summed when no total
 STATE_KEYS = [
 	("taxpayer", "state"), ("taxpayer", "address.state"), ("jurisdiction_and_authority", "state"),
 	("notice", "state"), ("portal_metadata", "state"),
 ]
+ADDRESS_KEYS = [  # free-text addresses; the state name is looked up inside them
+	("taxpayer", "registered_address"), ("taxpayer", "principal_place_of_business"),
+	("taxpayer", "address"),
+]
+GSTIN_KEYS = [("taxpayer", "gstin"), ("portal_metadata", "gstin")]
 NOTICE_TYPE_KEYS = [
 	("portal_metadata", "noticeType"), ("notice", "type"), ("notice", "notice_type"),
 	("document_identity", "type"), ("notice", "form"),
@@ -67,7 +73,7 @@ RISK_LEVELS = ["Critical", "High", "Medium", "Low", "Unrated"]
 RISK_RANK = {lvl: i for i, lvl in enumerate(RISK_LEVELS)}
 
 JSON_FIELDS = sorted({f for f, _ in DUE_DATE_KEYS + ISSUE_DATE_KEYS + RISK_KEYS + DEMAND_TOTAL_KEYS
-                      + STATE_KEYS + NOTICE_TYPE_KEYS + STATUS_KEYS} | {"demand_versions", "lifecycle_events"})
+                      + STATE_KEYS + ADDRESS_KEYS + GSTIN_KEYS + NOTICE_TYPE_KEYS + STATUS_KEYS} | {"demand_versions", "lifecycle_events"})
 
 # GST state codes (first two digits of a GSTIN)
 GST_STATES = {
@@ -106,9 +112,16 @@ def _dig(obj, dotted):
 	return obj
 
 
+def _unwrap(v):
+	"""AI-extracted values come as {"value": ..., "display_value": ..., "confidence": ...}."""
+	while isinstance(v, dict) and "value" in v:
+		v = v["value"]
+	return v
+
+
 def _first(row, keys):
 	for field, key in keys:
-		v = _dig(row["_j"].get(field), key)
+		v = _unwrap(_dig(row["_j"].get(field), key))
 		if v not in (None, "", [], {}):
 			return v
 	return None
@@ -121,19 +134,20 @@ def _date(value):
 		return value.date()
 	if isinstance(value, date):
 		return value
+	value = _unwrap(value)
+	if not isinstance(value, (str, int, float)):
+		return None
 	s = str(value).strip()[:10]
-	for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"):
+	for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d"):
 		try:
 			return datetime.strptime(s, fmt).date()
 		except ValueError:
 			pass
-	try:
-		return getdate(str(value))
-	except Exception:
-		return None
+	return None  # not a date we recognise (never raise: one bad value must not break the dashboard)
 
 
 def _amount(value):
+	value = _unwrap(value)
 	if value in (None, ""):
 		return 0.0
 	if isinstance(value, (int, float)):
@@ -151,6 +165,7 @@ def _amount(value):
 
 
 def _risk(value):
+	value = _unwrap(value)
 	if isinstance(value, dict):
 		value = value.get("level") or value.get("value")
 	s = str(value or "").strip().lower()
@@ -200,7 +215,8 @@ def _resolved_on(row):
 			text = " ".join(str(ev.get(k) or "") for k in ("event", "type", "status", "name")).lower()
 			if any(w in text for w in RESOLVED_WORDS):
 				return _date(ev.get("at") or ev.get("date") or ev.get("on")) or getdate(row["modified"])
-	status = str(_first(row, STATUS_KEYS) or "").lower()
+	status = str(_first(row, STATUS_KEYS) or "")
+	status = status.lower() if isinstance(status, str) else ""
 	if any(w in status for w in RESOLVED_WORDS):
 		return getdate(row["modified"])
 	if RESOLVED_ON_SUBMIT and row.get("docstatus") == 1:
@@ -208,10 +224,23 @@ def _resolved_on(row):
 	return None
 
 
+def _state_in(text):
+	"""State name mentioned in a free-text address (longest name first)."""
+	t = str(text or "").lower()
+	for name in sorted(GST_STATES.values(), key=len, reverse=True):
+		if name.lower() in t:
+			return name
+	return None
+
+
 def _prepare(row, gstin_states):
 	row["_j"] = {f: (_json(row.get(f)) or {}) for f in JSON_FIELDS}
-	gstin = (row.get("gstin") or "").strip().upper()
+	gstin = str(row.get("gstin") or _first(row, GSTIN_KEYS) or "").strip().upper()
 	state = _first(row, STATE_KEYS)
+	if not isinstance(state, str):
+		state = None
+	if not state:
+		state = _state_in(_first(row, ADDRESS_KEYS))
 	if not state and gstin:
 		state = gstin_states.get(gstin) or GST_STATES.get(gstin[:2])
 	return {
