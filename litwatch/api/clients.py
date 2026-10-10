@@ -1,386 +1,250 @@
 # apps/litwatch/litwatch/api/clients.py
+"""
+Client APIs used by the frontend (roster, create, active client, onboarding
+pipeline). They now run on the Business doctype: a "client" is a Business and
+its "key" is the Business ID. GST registrations come from the GSTIN doctype.
+Endpoint paths and response shapes are unchanged.
+"""
 
 import frappe
 from frappe import _
+from frappe.utils import add_months, get_first_day, get_last_day, getdate, nowdate
+
+from litwatch.api.business import new_business, onboarding_stages
 
 
-@frappe.whitelist(methods=["GET"])
-def get_clients():
-    """
-    Returns the client roster with per-client summary metrics.
-
-    Used in:
-      - Sidebar's ActiveClientDropdown
-      - Client Portfolio (per-client cards) — /client-portfolio
-      - Client Management (roster) — /client-management
-
-    Response:
-      [
-        {
-          "key": "masl",
-          "name": "Meridian Apparel Sourcing Ltd",
-          "shortName": "MASL",
-          "pan": "AABCM1234F",
-          "sector": "Textiles",
-          "notices": 14,
-          "demand": 1840000,
-          "overdue": 2,
-          "registrations": [
-            { "gstin": "29ABCDE1234F1Z5", "state": "Karnataka", "consent": "active" }
-          ],
-          "trendData": [3, 5, 2, 6, 4, 7, 3, 5, 8, 6, 4, 5],
-          "resolvedData": [2, 4, 3, 5, 4, 6, 3, 4, 7, 5, 5, 4]
-        }
-      ]
-    """
-    from frappe.utils import add_months, get_first_day, get_last_day, getdate, nowdate
-
-    raw_clients = frappe.get_all(
-        "Client",
-        fields=["name", "client_name", "short_name", "pan", "sector"],
-        limit_page_length=0,
-    )
-
-    # Rename fields in Python instead of aliasing reserved words in SQL
-    clients = []
-    for rc in raw_clients:
-        clients.append({
-            "key": rc["name"],
-            "name": rc["client_name"],
-            "shortName": rc["short_name"],
-            "pan": rc["pan"],
-            "sector": rc["sector"],
-        })
-
-    today = getdate(nowdate())
-
-    # Build the trailing 12-month window (oldest first)
-    months = []
-    for i in range(11, -1, -1):
-        month_date = add_months(today, -i)
-        months.append({
-            "start": get_first_day(month_date),
-            "end": get_last_day(month_date),
-        })
-
-    for c in clients:
-        client_key = c["key"]
-
-        # Litigation Notice was removed; notice metrics stay in the
-        # response (as zeros) so the frontend shape does not change.
-        c["notices"] = 0
-        c["demand"] = 0
-        c["overdue"] = 0
-
-        registrations = frappe.get_all(
-            "GST Registration",
-            filters={"client": client_key},
-            fields=["gstin", "state", "consent_status as consent"],
-            limit_page_length=0,
-        )
-        c["registrations"] = registrations
-
-        c["trendData"] = [0] * len(months)
-        c["resolvedData"] = [0] * len(months)
-
-    return clients
+def _request_params():
+	"""JSON body + form_dict + query string (first non-empty wins in that order)."""
+	body = {}
+	if frappe.request and frappe.request.data:
+		try:
+			body = frappe.request.get_json(silent=True) or {}
+		except Exception:
+			body = {}
+	fd = dict(frappe.form_dict or {})
+	qs = dict(frappe.request.args or {}) if frappe.request else {}
+	return [s for s in (body, fd, qs) if isinstance(s, dict)]
 
 
-def _resolve_firm_profile():
-    firm_profile = frappe.defaults.get_user_default("firm_profile")
-    if firm_profile and frappe.db.exists("Firm Profile", firm_profile):
-        return firm_profile
-
-    existing = frappe.db.get_value("Client", {"firm_profile": ["is", "set"]}, "firm_profile")
-    if existing and frappe.db.exists("Firm Profile", existing):
-        return existing
-
-    first = frappe.db.get_value("Firm Profile", {}, "name", order_by="creation asc")
-    if first:
-        return first
-
-    frappe.throw(_("No Firm Profile exists. Create one before adding clients."))
+def _pick(sources, *keys):
+	for src in sources:
+		for k in keys:
+			v = src.get(k)
+			if v not in (None, ""):
+				return v
+	return None
 
 
-def _onboarding_stages():
-    options = frappe.get_meta("Client").get_field("onboarding_stage").options or ""
-    return [o for o in options.split("\n") if o]
+def _resolve_business(key):
+	"""Business ID from a key; also accepts a short name (e.g. old client codes like 'GT')."""
+	key = str(key).strip()
+	if frappe.db.exists("Business", key):
+		return key
+	alt = frappe.db.get_value("Business", {"short_name": key.upper()}, "name")
+	if alt:
+		return str(alt)
+	frappe.throw(_("Client {0} not found").format(key), frappe.DoesNotExistError)
 
-
-@frappe.whitelist(methods=["POST"])
-def create_client(name=None, pan=None, sector=None, firstGstin=None):
-    import re
-    from frappe.utils import nowdate
-
-    name = str(name or "").strip()
-    if not name:
-        frappe.throw(_("name is required"))
-
-    firstGstin = str(firstGstin or "").strip().upper() or None
-    if firstGstin:
-        if not re.fullmatch(r"[0-9]{2}[A-Z0-9]{13}", firstGstin):
-            frappe.throw(_("Invalid GSTIN: {0}").format(firstGstin))
-        owner = frappe.db.get_value("GST Registration", firstGstin, "client")
-        if owner:
-            frappe.throw(_("GSTIN {0} is already registered to client {1}").format(firstGstin, owner))
-
-    initials = "".join(w[0].upper() for w in name.split() if w and w[0].isalnum()) or "CL"
-    client_code = initials
-    suffix = 1
-    while frappe.db.exists("Client", client_code):
-        suffix += 1
-        client_code = f"{initials}{suffix}"
-
-    stages = _onboarding_stages()
-    client = frappe.get_doc({
-        "doctype": "Client",
-        "client_code": client_code,
-        "client_name": name,
-        "short_name": client_code,
-        "firm_profile": _resolve_firm_profile(),
-        "pan": str(pan).strip().upper() if pan else None,
-        "sector": str(sector).strip() if sector else None,
-        "status": "Active",
-        "onboarding_stage": stages[0] if stages else None,
-        "onboarding_date": nowdate(),
-    })
-    client.insert(ignore_permissions=True)
-
-    registrations = []
-    if firstGstin:
-        reg = frappe.get_doc({
-            "doctype": "GST Registration",
-            "gstin": firstGstin,
-            "client": client.name,
-            "consent_status": "inactive",
-        }).insert(ignore_permissions=True)
-        registrations.append({"gstin": reg.name, "state": reg.state, "consent": reg.consent_status})
-
-    frappe.db.commit()
-
-    frappe.local.response.http_status_code = 201
-    return {
-        "key": client.name,
-        "name": client.client_name,
-        "notices": 0,
-        "registrations": registrations,
-    }
 
 # ---------------------------------------------------------------------------
-# 2.3) PATCH /session/active-client
+# GET litwatch.api.clients.get_clients
+# ---------------------------------------------------------------------------
+@frappe.whitelist(methods=["GET"])
+def get_clients():
+	"""
+	Client roster (every Business) with summary metrics.
+
+	  [{ "key": "1", "name": "...", "shortName": "...", "pan": "...", "sector": "...",
+	     "notices": 2, "demand": 0, "overdue": 0,
+	     "registrations": [{"gstin": "...", "state": null, "consent": "active"}],
+	     "trendData": [12 monthly counts of notices received], "resolvedData": [12 zeros] }]
+
+	notices / trendData count Notice records with this Business ID (trendData by
+	the month the notice was imported). demand, overdue and resolvedData are 0:
+	Notice has no structured demand, due-date or resolved fields yet.
+	"""
+	businesses = frappe.get_all(
+		"Business",
+		fields=["name", "business_name", "short_name", "pan", "sector"],
+		order_by="name asc",
+		limit_page_length=0,
+	)
+	if not businesses:
+		return []
+
+	gstins = frappe.get_all(
+		"GSTIN", fields=["name", "business_id", "state", "consent_status"], limit_page_length=0
+	)
+	regs_by_business = {}
+	for g in gstins:
+		regs_by_business.setdefault(str(g.business_id), []).append(
+			{"gstin": g.name, "state": g.state, "consent": g.consent_status or "inactive"}
+		)
+
+	today = getdate(nowdate())
+	months = [add_months(today, -i) for i in range(11, -1, -1)]
+	window_start = get_first_day(months[0])
+	window_end = get_last_day(months[-1])
+
+	counts = dict(
+		frappe.db.sql(
+			"""SELECT business_id, COUNT(*) FROM `tabNotice`
+			WHERE IFNULL(business_id, '') != '' GROUP BY business_id"""
+		)
+	)
+	monthly = {}
+	for business_id, ym, n in frappe.db.sql(
+		"""SELECT business_id, DATE_FORMAT(creation, '%%Y-%%m'), COUNT(*) FROM `tabNotice`
+		WHERE IFNULL(business_id, '') != '' AND creation BETWEEN %s AND %s
+		GROUP BY business_id, DATE_FORMAT(creation, '%%Y-%%m')""",
+		(f"{window_start} 00:00:00", f"{window_end} 23:59:59"),
+	):
+		monthly[(str(business_id), ym)] = n
+
+	result = []
+	for b in businesses:
+		key = str(b.name)
+		result.append(
+			{
+				"key": key,
+				"name": b.business_name,
+				"shortName": b.short_name,
+				"pan": b.pan,
+				"sector": b.sector,
+				"notices": counts.get(key, 0),
+				"demand": 0,
+				"overdue": 0,
+				"registrations": regs_by_business.get(key, []),
+				"trendData": [monthly.get((key, m.strftime("%Y-%m")), 0) for m in months],
+				"resolvedData": [0] * len(months),
+			}
+		)
+	return result
+
+
+# ---------------------------------------------------------------------------
+# POST litwatch.api.clients.create_client
+# ---------------------------------------------------------------------------
+@frappe.whitelist(methods=["POST"])
+def create_client(name=None, pan=None, sector=None, firstGstin=None):
+	"""Creates a Business (and its first GSTIN). Same as business.create_business,
+	in the client response shape. Returns HTTP 201."""
+	sources = _request_params()
+	name = name or _pick(sources, "name")
+	pan = pan or _pick(sources, "pan")
+	sector = sector or _pick(sources, "sector")
+	firstGstin = firstGstin or _pick(sources, "firstGstin", "gstin")
+	portal_user_id = _pick(sources, "portalUserId")
+
+	business, gstins = new_business(name, pan, sector, firstGstin, portal_user_id=portal_user_id)
+	frappe.db.commit()
+
+	frappe.local.response.http_status_code = 201
+	return {
+		"key": str(business.name),
+		"name": business.business_name,
+		"notices": 0,
+		"registrations": gstins,
+	}
+
+
+# ---------------------------------------------------------------------------
+# PATCH litwatch.api.clients.set_active_client   (raw JSON response)
 # ---------------------------------------------------------------------------
 @frappe.whitelist(methods=["PATCH", "POST"])
 def set_active_client(clientKey=None):
-    """
-    Sets the caller's active client for the current session.
+	"""Stores the caller's active Business. Returns { "clientKey": "<Business ID>" }."""
+	client_key = clientKey or _pick(_request_params(), "clientKey", "client_key", "key", "businessId")
+	if not client_key:
+		frappe.throw(_("clientKey is required"))
 
-    Used in:
-      - Sidebar's ActiveClientDropdown
-      - Client Portfolio's "Enter Workspace" button
-      - Litigation Dashboard's client tiles
-    (triggered on any client-select action; no dedicated page route)
+	business_id = _resolve_business(client_key)
+	frappe.defaults.set_user_default("active_client", business_id)
 
-    Accepts `clientKey` from JSON body, form_dict, or query string.
-
-    Returns (200 OK, raw JSON — no "message" wrapper):
-      { "clientKey": "masl" }
-    """
-    body = {}
-    if frappe.request and frappe.request.data:
-        try:
-            body = frappe.request.get_json(silent=True) or {}
-        except Exception:
-            body = {}
-
-    fd = dict(frappe.form_dict or {})
-    qs = dict(frappe.request.args or {}) if frappe.request else {}
-
-    def _pick(*keys):
-        for src in (body, fd, qs):
-            for k in keys:
-                v = src.get(k)
-                if v not in (None, ""):
-                    return v
-        return None
-
-    client_key = clientKey or _pick("clientKey", "client_key", "key")
-
-    if not client_key:
-        frappe.throw(_("clientKey is required"))
-
-    # Validate existence — matches the client's `name` docname
-    if not frappe.db.exists("Client", client_key):
-        # Also try by client_code (uppercase initials) for tolerance
-        alt = frappe.db.get_value("Client", {"client_code": client_key.upper()}, "name")
-        if alt:
-            client_key = alt
-        else:
-            frappe.throw(_("Client {0} not found").format(client_key))
-
-    frappe.defaults.set_user_default("active_client", client_key)
-
-    # --- Response: raw JSON, no "message" wrapper ---
-    frappe.local.response.update({
-        "clientKey": client_key,
-    })
-    frappe.local.response.http_status_code = 200
-    return
+	frappe.local.response.update({"clientKey": business_id})
+	frappe.local.response.http_status_code = 200
+	return
 
 
 # ---------------------------------------------------------------------------
-# 2.4) GET /session/active-client
+# GET litwatch.api.clients.get_active_client   (raw JSON response)
 # ---------------------------------------------------------------------------
 @frappe.whitelist(methods=["GET"])
 def get_active_client():
-    """
-    Returns the caller's currently active client, or null if none is set.
+	"""Returns { "clientKey": "<Business ID>" } or { "clientKey": null }."""
+	client_key = frappe.defaults.get_user_default("active_client") or None
+	if client_key and not frappe.db.exists("Business", client_key):
+		client_key = None  # stale value (e.g. an old Client code)
 
-    Used in:
-      - Sidebar's ActiveClientDropdown (initial load)
-      - Any page that needs to know which client the user is currently in
+	frappe.local.response.update({"clientKey": client_key})
+	frappe.local.response.http_status_code = 200
+	return
 
-    Returns (200 OK, raw JSON — no "message" wrapper):
-      { "clientKey": "masl" }   or   { "clientKey": null }
-    """
-    client_key = frappe.defaults.get_user_default("active_client") or None
-
-    frappe.local.response.update({
-        "clientKey": client_key,
-    })
-    frappe.local.response.http_status_code = 200
-    return
 
 # ---------------------------------------------------------------------------
-# 2.4) GET /clients/pipeline
+# GET litwatch.api.clients.get_client_pipeline   (response wrapped in "data")
 # ---------------------------------------------------------------------------
 @frappe.whitelist(methods=["GET"])
 def get_client_pipeline():
-    """
-    Returns clients in the onboarding pipeline (anything not yet 'Complete').
+	"""Businesses still onboarding (stage not Complete), sorted by stage then date."""
+	businesses = frappe.get_all(
+		"Business",
+		filters={"onboarding_stage": ["!=", "Complete"]},
+		fields=["name", "business_name", "sector", "onboarding_stage", "onboarding_date"],
+		limit_page_length=0,
+	)
+	gstin_counts = dict(
+		frappe.db.sql(
+			"""SELECT business_id, COUNT(*) FROM `tabGSTIN`
+			WHERE IFNULL(business_id, '') != '' GROUP BY business_id"""
+		)
+	)
 
-    Used in: Client Management's onboarding pipeline — /client-management.
+	result = []
+	for b in businesses:
+		when = b.get("onboarding_date")
+		result.append(
+			{
+				"id": str(b.name),
+				"name": b.business_name,
+				"sector": b.sector,
+				"stage": b.onboarding_stage,
+				"gstins": gstin_counts.get(str(b.name), 0),
+				"when": str(getdate(when)) if when else None,
+			}
+		)
 
-    Returns (raw JSON — no "message" wrapper):
-      [
-        {
-          "name": "Horizon Retail Pvt Ltd",
-          "sector": "Retail",
-          "stage": "GSTIN pending",
-          "gstins": 1,
-          "when": "2026-08-10"
-        }
-      ]
-    """
-    from frappe.utils import getdate
+	stage_order = {stage: i for i, stage in enumerate(onboarding_stages(), start=1)}
+	result.sort(key=lambda r: (stage_order.get(r["stage"], 99), r.get("when") or ""))
 
-    clients = frappe.get_all(
-        "Client",
-        filters={"onboarding_stage": ["!=", "Complete"]},
-        fields=[
-            "name",
-            "client_name",
-            "sector",
-            "onboarding_stage",
-            "onboarding_date",
-        ],
-        limit_page_length=0,
-    )
-
-    result = []
-    for c in clients:
-        gstin_count = frappe.db.count(
-            "GST Registration",
-            filters={"client": c["name"]},
-        )
-        when = c.get("onboarding_date")
-        result.append({
-            "name": c.get("client_name") or c.get("name"),
-            "sector": c.get("sector"),
-            "stage": c.get("onboarding_stage"),
-            "gstins": gstin_count,
-            "when": str(getdate(when)) if when else None,
-        })
-
-    # Sort by stage (custom order), then by date ascending
-    # Order = order of the options on Client.onboarding_stage
-    stage_order = {stage: i for i, stage in enumerate(_onboarding_stages(), start=1)}
-    result.sort(key=lambda r: (
-        stage_order.get(r["stage"], 99),
-        r.get("when") or "",
-    ))
-
-    frappe.local.response.update({
-        "data": result,
-    })
-    frappe.local.response.http_status_code = 200
-    return
+	frappe.local.response.update({"data": result})
+	frappe.local.response.http_status_code = 200
+	return
 
 
 # ---------------------------------------------------------------------------
-# 2.5) PATCH /clients/:id/pipeline-stage
+# PATCH litwatch.api.clients.update_client_pipeline_stage   (raw JSON response)
 # ---------------------------------------------------------------------------
 @frappe.whitelist(methods=["PATCH", "POST"])
 def update_client_pipeline_stage(id=None, stage=None):
-    """
-    Updates a client's onboarding stage.
+	"""Moves a Business to another onboarding stage. Returns { "name": ..., "stage": ... }."""
+	sources = _request_params()
+	id = id or _pick(sources, "id", "clientKey", "client_key", "key", "businessId")
+	stage = stage or _pick(sources, "stage", "onboarding_stage")
 
-    Used in: Client Management's pipeline drag-and-drop / stage selector.
+	if not id:
+		frappe.throw(_("id is required"))
+	if not stage:
+		frappe.throw(_("stage is required"))
 
-    Accepts `id` and `stage` from JSON body, form_dict, or query string.
+	valid_stages = onboarding_stages()
+	if stage not in valid_stages:
+		frappe.throw(_("Invalid stage: {0}. Must be one of {1}").format(stage, valid_stages))
 
-    Returns (raw JSON — no "message" wrapper):
-      { "name": "Horizon Retail Pvt Ltd", "stage": "GSTIN pending" }
-    """
-    # --- Resolve params from JSON body / form_dict / query string ---
-    body = {}
-    if frappe.request and frappe.request.data:
-        try:
-            body = frappe.request.get_json(silent=True) or {}
-        except Exception:
-            body = {}
+	business_id = _resolve_business(id)
+	frappe.db.set_value("Business", business_id, "onboarding_stage", stage)
+	frappe.db.commit()
 
-    fd = dict(frappe.form_dict or {})
-    qs = dict(frappe.request.args or {}) if frappe.request else {}
-
-    def _pick(*keys):
-        for src in (body, fd, qs):
-            for k in keys:
-                v = src.get(k)
-                if v not in (None, ""):
-                    return v
-        return None
-
-    id = id or _pick("id", "clientKey", "client_key", "key")
-    stage = stage or _pick("stage", "onboarding_stage")
-
-    # --- Validation ---
-    if not id:
-        frappe.throw(_("id is required"))
-
-    if not stage:
-        frappe.throw(_("stage is required"))
-
-    valid_stages = _onboarding_stages()
-    if stage not in valid_stages:
-        frappe.throw(_("Invalid stage: {0}. Must be one of {1}").format(stage, valid_stages))
-
-    if not frappe.db.exists("Client", id):
-        # Try client_code fallback
-        alt = frappe.db.get_value("Client", {"client_code": id.upper()}, "name")
-        if alt:
-            id = alt
-        else:
-            frappe.throw(_("Client {0} not found").format(id))
-
-    # --- Persist ---
-    frappe.db.set_value("Client", id, "onboarding_stage", stage)
-    frappe.db.commit()
-
-    client_name = frappe.db.get_value("Client", id, "client_name")
-
-    frappe.local.response.update({
-        "name": client_name,
-        "stage": stage,
-    })
-    frappe.local.response.http_status_code = 200
-    return
+	frappe.local.response.update({"name": frappe.db.get_value("Business", business_id, "business_name"), "stage": stage})
+	frappe.local.response.http_status_code = 200
+	return

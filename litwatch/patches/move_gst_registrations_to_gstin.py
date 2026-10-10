@@ -42,7 +42,9 @@ def execute():
 				continue  # already set up under another business; leave it
 			frappe.db.set_value("GSTIN", reg.name, values, update_modified=False)
 		else:
-			frappe.get_doc({"doctype": "GSTIN", "gstin": reg.name, **values}).insert(ignore_permissions=True)
+			gstin_doc = frappe.get_doc({"doctype": "GSTIN", "gstin": reg.name, **values})
+			gstin_doc.flags.ignore_validate = True  # carry existing data over as-is
+			gstin_doc.insert(ignore_permissions=True)
 
 		otp = get_decrypted_password("GST Registration", reg.name, "portal_otp", raise_exception=False)
 		if otp:

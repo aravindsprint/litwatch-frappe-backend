@@ -36,7 +36,8 @@ def _clean_gstin(value):
 
 
 def _attach_gstin(business, gstin, address=None, portal_user_id=None):
-	"""Create the GSTIN record (or reuse it if it belongs to this business) and add it to the business."""
+	"""Create the GSTIN (or reuse it if it belongs to this business) with business_id set.
+	The GSTIN controller adds it to the Business's GSTIN table."""
 	business_id = str(business.name)
 	if frappe.db.exists("GSTIN", gstin):
 		owner = frappe.db.get_value("GSTIN", gstin, "business_id")
@@ -60,15 +61,67 @@ def _attach_gstin(business, gstin, address=None, portal_user_id=None):
 				"consent_status": "inactive",
 			}
 		).insert(ignore_permissions=True)
-
-	if not any(row.gstin == gstin for row in business.get("gstins") or []):
-		business.append("gstins", {"gstin": gstin})
-		business.save(ignore_permissions=True)
 	return doc
 
 
 def _gstin_row(doc):
 	return {"gstin": doc.name, "state": doc.state, "consent": doc.consent_status or "inactive"}
+
+
+def _initials(name):
+	return "".join(w[0].upper() for w in name.split() if w and w[0].isalnum()) or "BIZ"
+
+
+def resolve_firm_profile():
+	"""User default, else one already used by a business, else the first Firm Profile (or None)."""
+	firm_profile = frappe.defaults.get_user_default("firm_profile")
+	if firm_profile and frappe.db.exists("Firm Profile", firm_profile):
+		return firm_profile
+	existing = frappe.db.get_value("Business", {"firm_profile": ["is", "set"]}, "firm_profile")
+	if existing and frappe.db.exists("Firm Profile", existing):
+		return existing
+	return frappe.db.get_value("Firm Profile", {}, "name", order_by="creation asc")
+
+
+def onboarding_stages():
+	options = frappe.get_meta("Business").get_field("onboarding_stage").options or ""
+	return [o for o in options.split("\n") if o]
+
+
+def new_business(name, pan=None, sector=None, first_gstin=None, address=None, portal_user_id=None):
+	"""Create a Business (with onboarding defaults) and optionally its first GSTIN.
+	Returns (business, [gstin rows])."""
+	from frappe.utils import nowdate
+
+	name = str(name or "").strip()
+	if not name:
+		frappe.throw(_("name is required"))
+
+	gstin = _clean_gstin(first_gstin) if first_gstin else None
+	if gstin:
+		owner = frappe.db.get_value("GSTIN", gstin, "business_id")
+		if owner:
+			frappe.throw(_("GSTIN {0} already belongs to Business {1}").format(gstin, owner))
+
+	stages = onboarding_stages()
+	business = frappe.get_doc(
+		{
+			"doctype": "Business",
+			"business_name": name,
+			"short_name": _initials(name),
+			"pan": str(pan).strip().upper() if pan else None,
+			"sector": str(sector).strip() if sector else None,
+			"status": "Active",
+			"firm_profile": resolve_firm_profile(),
+			"onboarding_stage": stages[0] if stages else None,
+			"onboarding_date": nowdate(),
+		}
+	).insert(ignore_permissions=True)
+
+	rows = []
+	if gstin:
+		rows.append(_gstin_row(_attach_gstin(business, gstin, address, portal_user_id)))
+	return business, rows
 
 
 # ---------------------------------------------------------------------------
@@ -85,28 +138,7 @@ def create_business(name=None, pan=None, sector=None, firstGstin=None, address=N
 	address = address or p.get("address")
 	portalUserId = portalUserId or p.get("portalUserId")
 
-	if not name:
-		frappe.throw(_("name is required"))
-
-	gstin = _clean_gstin(firstGstin) if firstGstin else None
-	if gstin and frappe.db.get_value("GSTIN", gstin, "business_id"):
-		frappe.throw(
-			_("GSTIN {0} already belongs to Business {1}").format(gstin, frappe.db.get_value("GSTIN", gstin, "business_id"))
-		)
-
-	business = frappe.get_doc(
-		{
-			"doctype": "Business",
-			"business_name": name,
-			"pan": str(pan).strip().upper() if pan else None,
-			"sector": str(sector).strip() if sector else None,
-			"status": "Active",
-		}
-	).insert(ignore_permissions=True)
-
-	gstins = []
-	if gstin:
-		gstins.append(_gstin_row(_attach_gstin(business, gstin, address, portalUserId)))
+	business, gstins = new_business(name, pan, sector, firstGstin, address, portalUserId)
 
 	frappe.db.commit()
 	frappe.local.response.http_status_code = 201

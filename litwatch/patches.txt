@@ -7,3 +7,4 @@
 litwatch.patches.backfill_resolved_on
 litwatch.patches.remove_only_litigation_notice
 litwatch.patches.move_gst_registrations_to_gstin
+litwatch.patches.migrate_clients_to_business

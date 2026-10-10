@@ -10,7 +10,13 @@
   "gstins",
   "pan",
   "sector",
-  "status"
+  "status",
+  "short_name",
+  "firm_profile",
+  "onboarding_stage",
+  "onboarding_date",
+  "default_consultant",
+  "notes"
  ],
  "fields": [
   {
@@ -45,12 +51,47 @@
    "default": "Active",
    "in_list_view": 1,
    "in_standard_filter": 1
+  },
+  {
+   "fieldname": "short_name",
+   "fieldtype": "Data",
+   "label": "Short Name"
+  },
+  {
+   "fieldname": "firm_profile",
+   "fieldtype": "Link",
+   "label": "Firm Profile",
+   "options": "Firm Profile"
+  },
+  {
+   "fieldname": "onboarding_stage",
+   "fieldtype": "Select",
+   "label": "Onboarding Stage",
+   "options": "Scoping call\nEngagement letter sent\nGSTIN authorisation pending\nComplete",
+   "default": "Scoping call",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "onboarding_date",
+   "fieldtype": "Date",
+   "label": "Onboarding Date"
+  },
+  {
+   "fieldname": "default_consultant",
+   "fieldtype": "Link",
+   "label": "Default Consultant",
+   "options": "Consultant"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Text",
+   "label": "Notes"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-01 21:00:00.000000",
+ "modified": "2026-10-02 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Business",
