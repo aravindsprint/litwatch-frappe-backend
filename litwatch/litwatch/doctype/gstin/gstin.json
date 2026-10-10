@@ -9,7 +9,14 @@
   "gstin",
   "business_id",
   "users",
-  "address"
+  "address",
+  "state",
+  "city",
+  "portal_user_id",
+  "consent_status",
+  "valid_until",
+  "last_checked",
+  "portal_otp"
  ],
  "fields": [
   {
@@ -37,12 +44,56 @@
    "fieldname": "address",
    "fieldtype": "Text",
    "label": "Address"
+  },
+  {
+   "fieldname": "state",
+   "fieldtype": "Link",
+   "label": "State",
+   "options": "State"
+  },
+  {
+   "fieldname": "city",
+   "fieldtype": "Data",
+   "label": "City"
+  },
+  {
+   "fieldname": "portal_user_id",
+   "fieldtype": "Data",
+   "label": "Portal User ID",
+   "description": "Taxpayer's GST portal (gst.gov.in) username"
+  },
+  {
+   "fieldname": "consent_status",
+   "fieldtype": "Select",
+   "label": "Consent Status",
+   "options": "inactive\npending\nactive\nexpired",
+   "default": "inactive",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "valid_until",
+   "fieldtype": "Date",
+   "label": "Valid Until"
+  },
+  {
+   "fieldname": "last_checked",
+   "fieldtype": "Datetime",
+   "label": "Last Checked",
+   "read_only": 1
+  },
+  {
+   "fieldname": "portal_otp",
+   "fieldtype": "Password",
+   "label": "Portal OTP",
+   "read_only": 1,
+   "description": "Last verified OTP, sent with notice API calls while the portal session is active"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-30 20:00:00.000000",
+ "modified": "2026-10-01 21:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "GSTIN",

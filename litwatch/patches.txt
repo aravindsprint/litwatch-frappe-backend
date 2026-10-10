@@ -6,3 +6,4 @@
 # Patches added in this section will be executed after doctypes are migrated
 litwatch.patches.backfill_resolved_on
 litwatch.patches.remove_only_litigation_notice
+litwatch.patches.move_gst_registrations_to_gstin

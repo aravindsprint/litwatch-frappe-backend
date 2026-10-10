@@ -47,9 +47,9 @@ def _pick(params, *keys):
 def _get_registration(gstin, ptype="write"):
 	if not gstin:
 		frappe.throw(_("gstin is required"))
-	if not frappe.db.exists("GST Registration", gstin):
-		frappe.throw(_("GST Registration {0} not found").format(gstin), frappe.DoesNotExistError)
-	reg = frappe.get_doc("GST Registration", gstin)
+	if not frappe.db.exists("GSTIN", gstin):
+		frappe.throw(_("GSTIN {0} not found. Add it to a Business first.").format(gstin), frappe.DoesNotExistError)
+	reg = frappe.get_doc("GSTIN", gstin)
 	if ptype:
 		reg.check_permission(ptype)
 	return reg
@@ -86,18 +86,20 @@ def _new_otp_request(gstin, otp_sent_to):
 # ---------------------------------------------------------------------------
 @frappe.whitelist(methods=["GET"])
 def get_gstin_connections():
-	registrations = frappe.get_all(
-		"GST Registration",
-		fields=["name", "city", "state", "client", "consent_status", "valid_until", "last_checked"],
+	"""Every GSTIN (GSTIN doctype) with its business, consent and notice count."""
+	gstins = frappe.get_all(
+		"GSTIN",
+		fields=["name", "city", "state", "business_id", "consent_status", "valid_until", "last_checked"],
 		order_by="modified desc",
 		limit_page_length=0,
 	)
-	if not registrations:
+	if not gstins:
 		return []
 
 	state_codes = dict(frappe.get_all("State", fields=["name", "state_code"], as_list=True))
-	client_codes = dict(frappe.get_all("Client", fields=["name", "client_code"], as_list=True))
-
+	business_names = {
+		str(k): v for k, v in frappe.get_all("Business", fields=["name", "business_name"], as_list=True)
+	}
 	notice_counts = dict(
 		frappe.db.sql(
 			"""SELECT gstin, COUNT(*) FROM `tabNotice`
@@ -107,33 +109,29 @@ def get_gstin_connections():
 
 	today = getdate(nowdate())
 	result = []
-	for reg in registrations:
-		if reg.client not in client_codes:
-			# Orphaned link: log it and skip the row instead of failing the whole list.
-			frappe.log_error(
-				title="GST Registration with missing Client",
-				message=f"GST Registration {reg.name} points to missing Client {reg.client}",
-			)
-			continue
-
-		consent = reg.consent_status or "inactive"
+	for g in gstins:
+		consent = g.consent_status or "inactive"
 		# Consent past its validity date is shown as expired even before a job updates it.
-		if consent == "active" and reg.valid_until and getdate(reg.valid_until) < today:
+		if consent == "active" and g.valid_until and getdate(g.valid_until) < today:
 			consent = "expired"
 
-		state = reg.state
+		state = g.state
+		business_id = str(g.business_id) if g.business_id else None
 		result.append(
 			{
-				"gstin": reg.name,
-				"code": state_codes.get(state) or (state[:2].upper() if state else ""),
-				"city": reg.city,
+				"gstin": g.name,
+				"code": state_codes.get(state) or (g.name[:2] if g.name else ""),
+				"city": g.city,
 				"state": state,
-				"client": client_codes.get(reg.client),
-				"clientKey": reg.client,
+				"businessId": business_id,
+				"businessName": business_names.get(business_id) if business_id else None,
+				# kept for the existing frontend shape
+				"client": business_names.get(business_id) if business_id else None,
+				"clientKey": business_id,
 				"consent": consent,
-				"validUntil": str(reg.valid_until) if reg.valid_until else None,
-				"lastChecked": _iso(reg.last_checked),
-				"notices": notice_counts.get(reg.name, 0),
+				"validUntil": str(g.valid_until) if g.valid_until else None,
+				"lastChecked": _iso(g.last_checked),
+				"notices": notice_counts.get(g.name, 0),
 			}
 		)
 	return result
@@ -263,12 +261,8 @@ def _portal_date(value):
 
 
 def _business_id_for(reg):
-	"""Business ID from the GSTIN doctype if the GSTIN is set up there, else the client key."""
-	if frappe.db.exists("GSTIN", reg.name):
-		business_id = frappe.db.get_value("GSTIN", reg.name, "business_id")
-		if business_id:
-			return business_id
-	return reg.client
+	"""Business ID of the GSTIN (GSTIN.business_id)."""
+	return str(reg.business_id) if reg.business_id else None
 
 
 def _save_portal_document(notice_name, meta, payload):
@@ -368,7 +362,7 @@ def _sync_one(reg, sync_run=None):
 		from frappe.utils.password import remove_encrypted_password
 
 		reg.db_set({"consent_status": "expired", "portal_otp": None}, update_modified=False)
-		remove_encrypted_password("GST Registration", reg.name, "portal_otp")
+		remove_encrypted_password("GSTIN", reg.name, "portal_otp")
 		frappe.db.commit()
 		raise gst_portal.PortalError(
 			_("GST portal session for {0} has expired. Reconnect the GSTIN with a new OTP.").format(reg.name)
@@ -408,7 +402,7 @@ def sync_gstin_notices(gstin=None):
 	reg = _get_registration(gstin)
 
 	if reg.consent_status != "active":
-		frappe.throw(_("GST Registration {0} has no active consent. Connect it first.").format(gstin))
+		frappe.throw(_("GSTIN {0} has no active consent. Connect it first.").format(gstin))
 
 	try:
 		result = _sync_one(reg)
@@ -431,7 +425,7 @@ def run_sync_job(gstin, run_id=None):
 		frappe.db.commit()
 
 	try:
-		reg = frappe.get_doc("GST Registration", gstin)
+		reg = frappe.get_doc("GSTIN", gstin)
 		if reg.consent_status != "active":
 			_write_sync_log(gstin, 0, 0, "skipped", sync_run=run_id, error="Consent not active")
 		else:
@@ -471,9 +465,9 @@ def run_all_gstin_sync():
 	gstins = [
 		g
 		for g in frappe.get_all(
-			"GST Registration", filters={"consent_status": "active"}, pluck="name", limit_page_length=0
+			"GSTIN", filters={"consent_status": "active"}, pluck="name", limit_page_length=0
 		)
-		if frappe.has_permission("GST Registration", "write", g)
+		if frappe.has_permission("GSTIN", "write", g)
 	]
 
 	run_id = f"RUN-{frappe.generate_hash(length=8).upper()}"
@@ -560,8 +554,8 @@ def get_sync_usage():
 def get_sync_log(gstin=None):
 	filters = {}
 	if gstin:
-		if not frappe.db.exists("GST Registration", gstin):
-			frappe.throw(_("GST Registration {0} not found").format(gstin), frappe.DoesNotExistError)
+		if not frappe.db.exists("GSTIN", gstin):
+			frappe.throw(_("GSTIN {0} not found").format(gstin), frappe.DoesNotExistError)
 		filters["gstin"] = gstin
 
 	rows = frappe.get_all(

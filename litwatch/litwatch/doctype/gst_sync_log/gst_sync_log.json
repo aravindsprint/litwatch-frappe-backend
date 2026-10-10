@@ -20,7 +20,7 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "GSTIN",
-   "options": "GST Registration"
+   "options": "GSTIN"
   },
   {
    "fieldname": "sync_time",
@@ -60,7 +60,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-24 12:00:00.000000",
+ "modified": "2026-10-01 21:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "GST Sync Log",
