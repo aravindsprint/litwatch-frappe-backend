@@ -275,23 +275,26 @@ def _mock_pdf(text):
 # Portal operations used by gstin.py
 # ---------------------------------------------------------------------------
 def request_otp(gstin, portal_user_id):
-	"""Start the taxpayer session. Returns where the OTP went.
+	"""Start the taxpayer session.
+
+	Returns {"sent_to": <where the OTP went>, "session_active": bool}.
 
 	The enriched APIs have no separate "send OTP" call: a taxpayer API called
 	without an active session makes the portal send an OTP to the registered
 	mobile / email and answer with an OTP-required error. So a notice list
-	call without the otp header is used to trigger it."""
+	call without the otp header is used to trigger it. If that call succeeds,
+	the portal session is already active and no OTP is needed."""
 	if is_mock():
 		_check_cap()
 		log_api_call("otp/request")
-		return "•• 42"
+		return {"sent_to": "•• 42", "session_active": False}
 
 	settings = _settings(gstin)
 	try:
 		_call(settings, "/enriched/notices", {"action": "NOTCELIST"}, gstin, portal_user_id, endpoint="otp/request")
 	except PortalOtpRequired:
-		return _("registered mobile / email")
-	return _("not needed (portal session already active)")
+		return {"sent_to": _("registered mobile / email"), "session_active": False}
+	return {"sent_to": _("not needed (portal session already active)"), "session_active": True}
 
 
 def verify_otp(gstin, portal_user_id, otp):

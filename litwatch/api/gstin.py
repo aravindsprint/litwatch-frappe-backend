@@ -59,7 +59,23 @@ def _iso(dt):
 	return get_datetime(dt).isoformat() + "Z" if dt else None
 
 
-def _new_otp_request(gstin, otp_sent_to):
+def _activate(reg, otp=None):
+	"""Consent active for 12 months. Stores the OTP for later calls, or clears any
+	old one when the portal session was already active (no OTP needed)."""
+	reg.consent_status = "active"
+	reg.valid_until = add_months(nowdate(), 12)
+	reg.last_checked = now_datetime()
+	if otp:
+		reg.portal_otp = str(otp).strip()  # sent with notice API calls while the session lasts
+	reg.save(ignore_permissions=True)
+	if not otp:
+		from frappe.utils.password import remove_encrypted_password
+
+		remove_encrypted_password("GSTIN", reg.name, "portal_otp")
+		reg.db_set("portal_otp", None, update_modified=False)
+
+
+def _new_otp_request(gstin, otp_sent_to, status="pending"):
 	# Only one live OTP request per GSTIN.
 	frappe.db.sql(
 		"""UPDATE `tabGST OTP Request` SET status = 'expired'
@@ -73,7 +89,7 @@ def _new_otp_request(gstin, otp_sent_to):
 			"gstin": gstin,
 			"otp_request_id": otp_request_id,
 			"otp_sent_to": otp_sent_to,
-			"status": "pending",
+			"status": status,
 			"requested_at": now_datetime(),
 			"expires_at": add_to_date(now_datetime(), minutes=gst_portal.otp_validity_minutes()),
 		}
@@ -151,17 +167,28 @@ def connect_gstin(gstin=None, portalUserId=None):
 
 	reg = _get_registration(gstin)
 
-	otp_sent_to = gst_portal.request_otp(gstin, portalUserId)
-
+	result = gst_portal.request_otp(gstin, portalUserId)
 	reg.portal_user_id = portalUserId
-	if reg.consent_status != "active":
-		reg.consent_status = "pending"
-	reg.save(ignore_permissions=True)
 
-	otp_request_id = _new_otp_request(gstin, otp_sent_to)
+	if result["session_active"]:
+		# The portal answered without an OTP: connected straight away,
+		# the same as a successful verify.
+		_activate(reg)
+		otp_request_id = _new_otp_request(gstin, result["sent_to"], status="verified")
+	else:
+		if reg.consent_status != "active":
+			reg.consent_status = "pending"
+		reg.save(ignore_permissions=True)
+		otp_request_id = _new_otp_request(gstin, result["sent_to"])
 	frappe.db.commit()
 
-	return {"otpSentTo": otp_sent_to, "otpRequestId": otp_request_id}
+	return {
+		"otpSentTo": result["sent_to"],
+		"otpRequestId": otp_request_id,
+		"otpRequired": not result["session_active"],
+		"consent": reg.consent_status,
+		"validUntil": str(reg.valid_until) if reg.valid_until else None,
+	}
 
 
 # ---------------------------------------------------------------------------
@@ -201,11 +228,7 @@ def verify_gstin_otp(gstin=None, otpRequestId=None, otp=None):
 		frappe.db.commit()  # keep the API usage count for the failed attempt
 		frappe.throw(_("Invalid OTP"))
 
-	reg.consent_status = "active"
-	reg.portal_otp = str(otp).strip()  # sent with notice API calls while the session lasts
-	reg.valid_until = add_months(nowdate(), 12)
-	reg.last_checked = now_datetime()
-	reg.save(ignore_permissions=True)
+	_activate(reg, otp)
 
 	otp_req.status = "verified"
 	otp_req.save(ignore_permissions=True)
@@ -225,11 +248,21 @@ def resend_gstin_otp(gstin=None):
 	if not reg.portal_user_id:
 		frappe.throw(_("GSTIN {0} has no portal user id. Call connect first.").format(gstin))
 
-	otp_sent_to = gst_portal.request_otp(gstin, reg.portal_user_id)
-	otp_request_id = _new_otp_request(gstin, otp_sent_to)
+	result = gst_portal.request_otp(gstin, reg.portal_user_id)
+	if result["session_active"]:
+		_activate(reg)
+		otp_request_id = _new_otp_request(gstin, result["sent_to"], status="verified")
+	else:
+		otp_request_id = _new_otp_request(gstin, result["sent_to"])
 	frappe.db.commit()
 
-	return {"otpRequestId": otp_request_id}
+	return {
+		"otpRequestId": otp_request_id,
+		"otpSentTo": result["sent_to"],
+		"otpRequired": not result["session_active"],
+		"consent": reg.consent_status,
+		"validUntil": str(reg.valid_until) if reg.valid_until else None,
+	}
 
 
 # ---------------------------------------------------------------------------
