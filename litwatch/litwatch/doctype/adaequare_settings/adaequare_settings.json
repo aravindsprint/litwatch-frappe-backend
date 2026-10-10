@@ -28,21 +28,23 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "set_only_once": 1,
-   "description": "The GSTIN this GSP app is used for. The record is saved with this GSTIN as its name."
+   "description": "The GSTIN this GSP app belongs to. The record is saved with this GSTIN as its name. Every GSTIN needs its own record."
   },
   {
    "fieldname": "client_id",
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Client ID",
-   "reqd": 1
+   "reqd": 1,
+   "description": "This GSTIN's GSP app id (gspappid)"
   },
   {
    "fieldname": "client_secret",
    "fieldtype": "Password",
    "in_list_view": 1,
    "label": "Client Secret",
-   "reqd": 1
+   "reqd": 1,
+   "description": "This GSTIN's GSP app secret (gspappsecret)"
   },
   {
    "default": "Live",
@@ -69,7 +71,7 @@
    "fieldtype": "Data",
    "label": "Base URL",
    "default": "https://gsp.adaequare.com",
-   "description": "GSP host, e.g. https://gsp.adaequare.com"
+   "description": "Same for every GSTIN: https://gsp.adaequare.com"
   },
   {
    "fieldname": "access_token",
@@ -88,7 +90,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-10 12:00:00.000000",
+ "modified": "2026-10-10 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Adaequare Settings",

@@ -79,18 +79,15 @@ def _check_cap():
 		)
 
 
-def _settings(gstin=None):
-	"""Which Adaequare Settings record (GSP app) to use for a GSTIN:
-	1. the active record whose GSTIN (= record name) is this GSTIN,
-	2. otherwise the first active record (for GSTINs without their own record)."""
-	name = None
-	if gstin:
-		name = frappe.db.get_value("Adaequare Settings", {"name": str(gstin).strip().upper(), "is_active": 1}, "name")
+def _settings(gstin):
+	"""The GSTIN's own Adaequare Settings record (its GSP app: Client ID and Secret).
+	Every GSTIN has its own GSP credentials, so there is no fallback to another record."""
+	gstin = str(gstin or "").strip().upper()
+	name = gstin and frappe.db.get_value("Adaequare Settings", {"name": gstin, "is_active": 1}, "name")
 	if not name:
-		name = frappe.db.get_value("Adaequare Settings", {"is_active": 1}, "name", order_by="creation asc")
-	if not name:
+		reason = _("is not active") if gstin and frappe.db.exists("Adaequare Settings", gstin) else _("does not exist")
 		frappe.throw(
-			_("No active Adaequare Settings found. Add a record with the GSTIN, GSP app id and secret, or enable Mock GST Portal in Sync Settings for testing."),
+			_("Adaequare Settings for GSTIN {0} {1}. Add it at /app/adaequare-settings with this GSTIN's GSP Client ID and Client Secret (and tick Is Active), or enable Mock GST Portal in Sync Settings for testing.").format(gstin or "-", reason),
 			PortalNotConfigured,
 		)
 	return frappe.get_doc("Adaequare Settings", name)
@@ -102,34 +99,6 @@ def _settings(gstin=None):
 def _own_record(gstin):
 	gstin = str(gstin or "").strip().upper()
 	return gstin if gstin and frappe.db.exists("Adaequare Settings", gstin) else None
-
-
-def ensure_settings(gstin):
-	"""Give a GSTIN its own Adaequare Settings record the first time it is connected,
-	copying the GSP app (client id, secret, environment, base URL) from the first
-	active record. Does nothing when the GSTIN already has a record or no active
-	record exists (e.g. mock mode only). Returns the record name or None."""
-	gstin = str(gstin or "").strip().upper()
-	if not gstin or not frappe.db.exists("GSTIN", gstin):
-		return None
-	if frappe.db.exists("Adaequare Settings", gstin):
-		return gstin
-	template = frappe.db.get_value("Adaequare Settings", {"is_active": 1}, "name", order_by="creation asc")
-	if not template:
-		return None
-	src = frappe.get_doc("Adaequare Settings", template)
-	frappe.get_doc(
-		{
-			"doctype": "Adaequare Settings",
-			"gstin": gstin,
-			"client_id": src.client_id,
-			"client_secret": src.get_password("client_secret"),
-			"environment": src.get("environment"),
-			"base_url": src.get("base_url"),
-			"is_active": 1,
-		}
-	).insert(ignore_permissions=True)
-	return gstin
 
 
 def saved_otp(gstin):
