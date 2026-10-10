@@ -12,7 +12,10 @@
   "user_id",
   "default_gstin",
   "environment",
-  "is_active"
+  "is_active",
+  "base_url",
+  "access_token",
+  "token_expires_at"
  ],
  "fields": [
   {
@@ -56,12 +59,32 @@
    "fieldname": "is_active",
    "fieldtype": "Check",
    "label": "Is Active"
+  },
+  {
+   "fieldname": "base_url",
+   "fieldtype": "Data",
+   "label": "Base URL",
+   "default": "https://gsp.adaequare.com",
+   "description": "GSP host, e.g. https://gsp.adaequare.com"
+  },
+  {
+   "fieldname": "access_token",
+   "fieldtype": "Password",
+   "label": "Access Token",
+   "read_only": 1,
+   "description": "Cached GSP bearer token (filled automatically)"
+  },
+  {
+   "fieldname": "token_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Token Expires At",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-09 15:02:56.319701",
+ "modified": "2026-10-01 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Adaequare Settings",

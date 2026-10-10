@@ -1,5 +1,10 @@
 # apps/litwatch/litwatch/api/gstin.py
 
+import base64
+import hashlib
+import json
+from datetime import datetime
+
 import frappe
 from frappe import _
 from frappe.utils import add_months, add_to_date, get_datetime, getdate, now_datetime, nowdate
@@ -93,6 +98,13 @@ def get_gstin_connections():
 	state_codes = dict(frappe.get_all("State", fields=["name", "state_code"], as_list=True))
 	client_codes = dict(frappe.get_all("Client", fields=["name", "client_code"], as_list=True))
 
+	notice_counts = dict(
+		frappe.db.sql(
+			"""SELECT gstin, COUNT(*) FROM `tabNotice`
+			WHERE IFNULL(gstin, '') != '' GROUP BY gstin"""
+		)
+	)
+
 	today = getdate(nowdate())
 	result = []
 	for reg in registrations:
@@ -121,7 +133,7 @@ def get_gstin_connections():
 				"consent": consent,
 				"validUntil": str(reg.valid_until) if reg.valid_until else None,
 				"lastChecked": _iso(reg.last_checked),
-				"notices": 0,  # Litigation Notice was removed
+				"notices": notice_counts.get(reg.name, 0),
 			}
 		)
 	return result
@@ -192,6 +204,7 @@ def verify_gstin_otp(gstin=None, otpRequestId=None, otp=None):
 		frappe.throw(_("Invalid OTP"))
 
 	reg.consent_status = "active"
+	reg.portal_otp = str(otp).strip()  # sent with notice API calls while the session lasts
 	reg.valid_until = add_months(nowdate(), 12)
 	reg.last_checked = now_datetime()
 	reg.save(ignore_permissions=True)
@@ -239,20 +252,151 @@ def _write_sync_log(gstin, seen, found, status, sync_run=None, error=None):
 	).insert(ignore_permissions=True)
 
 
-def _sync_one(reg, sync_run=None):
-	"""Pull notices for one registration and write GST Sync Log.
-	Returns {seen, found, status}.
+def _portal_date(value):
+	"""Portal dates are DD/MM/YYYY (or "NA"); return ISO or None."""
+	if not value or value == "NA":
+		return None
+	try:
+		return datetime.strptime(value, "%d/%m/%Y").date().isoformat()
+	except ValueError:
+		return None
 
-	Litigation Notice was removed, so portal notices are counted but not stored.
-	When the Adaequare integration is written, store them in the chosen doctype
-	here and count the new ones in `found`."""
-	portal_notices = gst_portal.fetch_notices(reg.name) or []
+
+def _business_id_for(reg):
+	"""Business ID from the GSTIN doctype if the GSTIN is set up there, else the client key."""
+	if frappe.db.exists("GSTIN", reg.name):
+		business_id = frappe.db.get_value("GSTIN", reg.name, "business_id")
+		if business_id:
+			return business_id
+	return reg.client
+
+
+def _save_portal_document(notice_name, meta, payload):
+	"""Decode the Base64 PDF, attach it to the Notice as a private file.
+	Returns (file_url, hash_ok) where hash_ok is None when the portal sent no hash."""
+	content = base64.b64decode(payload.get("data") or "")
+	if not content:
+		raise gst_portal.PortalError(_("Document {0} came back empty").format(meta.get("id")))
+	file_name = payload.get("doc_nam") or meta.get("docName") or f"{meta.get('id')}.pdf"
+	file_doc = frappe.get_doc(
+		{
+			"doctype": "File",
+			"file_name": file_name,
+			"attached_to_doctype": "Notice",
+			"attached_to_name": notice_name,
+			"is_private": 1,
+			"content": content,
+		}
+	).insert(ignore_permissions=True)
+	expected = (meta.get("hash") or "").lower()
+	hash_ok = None if not expected else hashlib.sha256(content).hexdigest() == expected
+	return file_doc.file_url, hash_ok
+
+
+def _import_portal_notice(reg, otp, item):
+	"""Fetch details and documents for one portal notice and store it as a Notice."""
+	ref_id = item["refId"]
+	details = gst_portal.get_notice_details(reg.name, reg.portal_user_id, ref_id, otp=otp) or {}
+
+	metadata = {
+		"source": "gst_portal",
+		"gstin": reg.name,
+		"refId": ref_id,
+		"arn": details.get("arn") or item.get("arn"),
+		"noticeType": details.get("noticeType"),
+		"alertCd": item.get("alertCd"),
+		"moduleCd": item.get("moduleCd"),
+		"dateOfIssue": details.get("dateOfIssue") or item.get("dateOfIssue"),
+		"dateOfIssueIso": _portal_date(details.get("dateOfIssue") or item.get("dateOfIssue")),
+		"dueDateOfReply": details.get("dueDateOfReply"),
+		"dueDateOfReplyIso": _portal_date(details.get("dueDateOfReply")),
+		"dateOfRespond": item.get("dateOfRespond"),
+		"taxPeriod": details.get("taxPeriod") or {},
+		"fetchedAt": now_datetime().isoformat(),
+	}
+
+	notice = frappe.get_doc(
+		{
+			"doctype": "Notice",
+			"naming_series": "DRC-.YYYY.-",
+			"client_id": frappe.session.user,
+			"business_id": _business_id_for(reg),
+			"gstin": reg.name,
+			"portal_ref_id": ref_id,
+			"portal_metadata": json.dumps(metadata),
+		}
+	)
+	notice.insert(ignore_permissions=True)
+
+	documents = []
+	for kind, entries in (("main", details.get("maindocs") or []), ("supporting", details.get("suppdocs") or [])):
+		for entry in entries:
+			meta = (entry or {}).get("dcupdtls") or {}
+			if not meta.get("id"):
+				continue
+			payload = gst_portal.download_document(reg.name, reg.portal_user_id, meta["id"], otp=otp) or {}
+			file_url, hash_ok = _save_portal_document(notice.name, meta, payload)
+			notice.append("document_files", {"file_name": file_url})
+			documents.append(
+				{
+					"kind": kind,
+					"documentId": meta.get("id"),
+					"docName": payload.get("doc_nam") or meta.get("docName"),
+					"docType": meta.get("ty"),
+					"contentType": payload.get("ct") or meta.get("ct"),
+					"hash": meta.get("hash"),
+					"hashVerified": hash_ok,
+					"fileUrl": file_url,
+				}
+			)
+
+	notice.document_identity = json.dumps({"refId": ref_id, "arn": metadata["arn"], "documents": documents})
+	notice.save(ignore_permissions=True)
+	return notice.name
+
+
+def _sync_one(reg, sync_run=None):
+	"""Pull notices for one registration from the GST portal, store the new ones
+	as Notice records (with their PDFs attached) and write GST Sync Log.
+	Returns {seen, found, status}."""
+	otp = reg.get_password("portal_otp", raise_exception=False) if reg.get("portal_otp") else None
+
+	try:
+		portal_notices = gst_portal.list_notices(reg.name, reg.portal_user_id, otp=otp) or []
+	except gst_portal.PortalOtpRequired:
+		# The portal session is over: the user must reconnect with a fresh OTP.
+		from frappe.utils.password import remove_encrypted_password
+
+		reg.db_set({"consent_status": "expired", "portal_otp": None}, update_modified=False)
+		remove_encrypted_password("GST Registration", reg.name, "portal_otp")
+		frappe.db.commit()
+		raise gst_portal.PortalError(
+			_("GST portal session for {0} has expired. Reconnect the GSTIN with a new OTP.").format(reg.name)
+		)
+
 	seen = len(portal_notices)
 	found = 0
+	errors = []
+	for item in portal_notices:
+		ref_id = item.get("refId")
+		if not ref_id or frappe.db.exists("Notice", {"portal_ref_id": ref_id}):
+			continue
+		frappe.db.savepoint("import_notice")
+		try:
+			_import_portal_notice(reg, otp, item)
+			found += 1
+		except (gst_portal.CallCapReached, gst_portal.PortalOtpRequired):
+			frappe.db.rollback(save_point="import_notice")
+			raise
+		except Exception as e:
+			frappe.db.rollback(save_point="import_notice")
+			errors.append(f"{ref_id}: {str(e)[:200]}")
+			frappe.log_error(title=f"GST notice import failed: {ref_id}", message=frappe.get_traceback())
 
+	status = "failed" if errors else "ok"
 	reg.db_set("last_checked", now_datetime(), update_modified=False)
-	_write_sync_log(reg.name, seen, found, "ok", sync_run=sync_run)
-	return {"seen": seen, "found": found, "status": "ok"}
+	_write_sync_log(reg.name, seen, found, status, sync_run=sync_run, error="\n".join(errors)[:1000] or None)
+	return {"seen": seen, "found": found, "status": status}
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +521,13 @@ def get_sync_usage():
 
 	week_start = frappe.utils.add_days(today_d, -today_d.weekday())
 	week_end = frappe.utils.add_days(week_start, 6)
-	notices_this_week = 0  # Litigation Notice was removed
+	notices_this_week = frappe.db.count(
+		"Notice",
+		filters={
+			"portal_ref_id": ["is", "set"],
+			"creation": ["between", [f"{week_start} 00:00:00", f"{week_end} 23:59:59"]],
+		},
+	)
 
 	skipped_runs = frappe.db.count("GST Sync Log", filters={"status": "skipped"})
 

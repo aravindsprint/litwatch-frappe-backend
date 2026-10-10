@@ -14,7 +14,8 @@
   "consent_status",
   "valid_until",
   "last_checked",
-  "portal_user_id"
+  "portal_user_id",
+  "portal_otp"
  ],
  "fields": [
   {
@@ -67,12 +68,19 @@
    "fieldname": "portal_user_id",
    "fieldtype": "Data",
    "label": "Portal User ID"
+  },
+  {
+   "fieldname": "portal_otp",
+   "fieldtype": "Password",
+   "label": "Portal OTP",
+   "read_only": 1,
+   "description": "Last verified OTP, sent with notice API calls while the portal session is active"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-24 12:00:00.000000",
+ "modified": "2026-10-01 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "GST Registration",

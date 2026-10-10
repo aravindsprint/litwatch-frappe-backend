@@ -29,14 +29,14 @@
    "fieldtype": "Check",
    "label": "Mock GST Portal",
    "default": "0",
-   "description": "Testing only. OTP 123456 is accepted and sync returns no notices. Never enable in production."
+   "description": "Testing only. Uses the sample data from the Adaequare collection instead of the real portal: OTP 123456 is accepted and sync imports 3 sample notices with a small PDF each. Never enable in production."
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-09-24 12:00:00.000000",
+ "modified": "2026-10-01 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Sync Settings",

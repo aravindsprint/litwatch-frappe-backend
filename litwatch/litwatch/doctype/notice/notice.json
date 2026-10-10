@@ -35,7 +35,9 @@
   "proceeding_stage",
   "proceeding_id",
   "demand_versions",
-  "lifecycle_events"
+  "lifecycle_events",
+  "gstin",
+  "portal_ref_id"
  ],
  "fields": [
   {
@@ -189,12 +191,28 @@
    "fieldname": "lifecycle_events",
    "fieldtype": "JSON",
    "label": "Lifecycle Events"
+  },
+  {
+   "fieldname": "gstin",
+   "fieldtype": "Data",
+   "label": "GSTIN",
+   "in_standard_filter": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "portal_ref_id",
+   "fieldtype": "Data",
+   "label": "Portal Reference ID",
+   "unique": 1,
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "refId from the GST portal; used to skip notices already imported"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-29 12:00:00.000000",
+ "modified": "2026-10-01 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Notice",
