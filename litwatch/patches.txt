@@ -10,3 +10,4 @@ litwatch.patches.move_gst_registrations_to_gstin
 litwatch.patches.migrate_clients_to_business
 litwatch.patches.repoint_client_links_to_business
 litwatch.patches.remove_client_and_gst_registration
+litwatch.patches.rename_adaequare_settings_to_gstin

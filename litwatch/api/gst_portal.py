@@ -79,8 +79,14 @@ def _check_cap():
 		)
 
 
-def _settings():
-	name = frappe.db.get_value("Adaequare Settings", {"is_active": 1}, "name")
+def _settings(gstin=None):
+	"""The active Adaequare Settings record for this GSTIN (records are named by GSTIN),
+	falling back to any active record."""
+	name = None
+	if gstin and frappe.db.get_value("Adaequare Settings", {"name": gstin, "is_active": 1}, "name"):
+		name = gstin
+	if not name:
+		name = frappe.db.get_value("Adaequare Settings", {"is_active": 1}, "name")
 	if not name:
 		frappe.throw(
 			_("No active Adaequare Settings found. Add one with the GSP app id and secret, or enable Mock GST Portal in Sync Settings for testing."),
@@ -280,7 +286,7 @@ def request_otp(gstin, portal_user_id):
 		log_api_call("otp/request")
 		return "•• 42"
 
-	settings = _settings()
+	settings = _settings(gstin)
 	try:
 		_call(settings, "/enriched/notices", {"action": "NOTCELIST"}, gstin, portal_user_id, endpoint="otp/request")
 	except PortalOtpRequired:
@@ -297,7 +303,7 @@ def verify_otp(gstin, portal_user_id, otp):
 
 	try:
 		_call(
-			_settings(), "/enriched/notices", {"action": "NOTCELIST"},
+			_settings(gstin), "/enriched/notices", {"action": "NOTCELIST"},
 			gstin, portal_user_id, otp=str(otp).strip(), endpoint="otp/verify",
 		)
 	except PortalOtpRequired:
@@ -313,7 +319,7 @@ def list_notices(gstin, portal_user_id, otp=None):
 		return [dict(n) for n in _MOCK_LIST]
 
 	data = _call(
-		_settings(), "/enriched/notices", {"action": "NOTCELIST"},
+		_settings(gstin), "/enriched/notices", {"action": "NOTCELIST"},
 		gstin, portal_user_id, otp=otp, endpoint="notices/list",
 	)
 	return data.get("notices") or []
@@ -328,7 +334,7 @@ def get_notice_details(gstin, portal_user_id, ref_id, otp=None):
 		return _mock_details(ref_id)
 
 	return _call(
-		_settings(), "/enriched/notices", {"action": "NOTCEDETAILS", "refId": ref_id},
+		_settings(gstin), "/enriched/notices", {"action": "NOTCEDETAILS", "refId": ref_id},
 		gstin, portal_user_id, otp=otp, endpoint="notices/details",
 	)
 
@@ -341,6 +347,6 @@ def download_document(gstin, portal_user_id, doc_id, otp=None):
 		return {"ct": "application/pdf", "doc_nam": f"{doc_id}.pdf", "data": _mock_pdf(f"Mock GST notice document {doc_id}")}
 
 	return _call(
-		_settings(), "/enriched/document", {"action": "DOCDOWNLOAD", "doc_id": doc_id},
+		_settings(gstin), "/enriched/document", {"action": "DOCDOWNLOAD", "doc_id": doc_id},
 		gstin, portal_user_id, otp=otp, form_typ="s", endpoint="document/download",
 	)
