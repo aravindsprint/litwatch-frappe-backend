@@ -80,16 +80,22 @@ def _check_cap():
 
 
 def _settings(gstin=None):
-	"""The active Adaequare Settings record for this GSTIN (records are named by GSTIN),
-	falling back to any active record."""
+	"""Which Adaequare Settings record (GSP app) to use for a GSTIN:
+	1. an active record named after the GSTIN (a client with its own GSP app),
+	2. otherwise the shared "LitWatch GSP" record,
+	3. otherwise any active record."""
+	from litwatch.litwatch.doctype.adaequare_settings.adaequare_settings import SHARED_NAME
+
 	name = None
 	if gstin and frappe.db.get_value("Adaequare Settings", {"name": gstin, "is_active": 1}, "name"):
 		name = gstin
+	if not name and frappe.db.get_value("Adaequare Settings", {"name": SHARED_NAME, "is_active": 1}, "name"):
+		name = SHARED_NAME
 	if not name:
-		name = frappe.db.get_value("Adaequare Settings", {"is_active": 1}, "name")
+		name = frappe.db.get_value("Adaequare Settings", {"is_active": 1}, "name", order_by="creation asc")
 	if not name:
 		frappe.throw(
-			_("No active Adaequare Settings found. Add one with the GSP app id and secret, or enable Mock GST Portal in Sync Settings for testing."),
+			_("No active Adaequare Settings found. Add the \"LitWatch GSP\" record with the GSP app id and secret, or enable Mock GST Portal in Sync Settings for testing."),
 			PortalNotConfigured,
 		)
 	return frappe.get_doc("Adaequare Settings", name)

@@ -1,12 +1,13 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "field:default_gstin",
+ "autoname": "",
  "creation": "2026-09-09 15:02:56.319701",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "is_shared",
   "client_id",
   "client_secret",
   "user_id",
@@ -18,6 +19,13 @@
   "token_expires_at"
  ],
  "fields": [
+  {
+   "fieldname": "is_shared",
+   "fieldtype": "Check",
+   "label": "Shared (all GSTINs)",
+   "default": "0",
+   "description": "The LitWatch GSP app used for every GSTIN. Saved as \"LitWatch GSP\". Leave unticked only for a client that must use its own GSP app; that record is named by its Default GSTIN and used for that GSTIN only."
+  },
   {
    "fieldname": "client_id",
    "fieldtype": "Data",
@@ -45,8 +53,7 @@
    "in_list_view": 1,
    "label": "Default GSTIN",
    "reqd": 1,
-   "unique": 1,
-   "description": "Also the record's name. Portal calls for this GSTIN use this record; other GSTINs use any active record."
+   "description": "For a GSTIN-specific record this is also its name. On the shared record it is only a default."
   },
   {
    "default": "Live",
@@ -85,7 +92,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-02 20:00:00.000000",
+ "modified": "2026-10-05 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Adaequare Settings",
@@ -109,5 +116,5 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "naming_rule": "By fieldname"
+ "naming_rule": "By script"
 }
