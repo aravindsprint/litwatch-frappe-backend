@@ -5,23 +5,14 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 
-SHARED_NAME = "LitWatch GSP"
-
 
 class AdaequareSettings(Document):
-	def autoname(self):
-		# The shared GSP app is "LitWatch GSP"; a client-specific app is named by its GSTIN.
-		if self.is_shared:
-			self.name = SHARED_NAME
-		else:
-			if not self.default_gstin:
-				frappe.throw(_("Enter the GSTIN this client-specific app is for, or tick Shared."))
-			self.name = self.default_gstin.strip().upper()
+	# Named by the GSTIN field (autoname "field:gstin")
 
 	def validate(self):
-		if self.default_gstin:
-			self.default_gstin = self.default_gstin.strip().upper()
-		if self.is_shared and not self.is_new() and self.name != SHARED_NAME:
-			frappe.throw(_("Rename this record to \"{0}\" to make it the shared GSP app.").format(SHARED_NAME))
-		if not self.is_shared and self.name == SHARED_NAME:
-			frappe.throw(_("\"{0}\" is the shared GSP app; keep Shared ticked.").format(SHARED_NAME))
+		if self.gstin:
+			self.gstin = self.gstin.strip().upper()
+		if self.otp:
+			self.otp = str(self.otp).strip()
+			if not self.otp.isdigit():
+				frappe.throw(_("OTP must be a number"))

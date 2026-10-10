@@ -1,29 +1,34 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "",
+ "autoname": "field:gstin",
  "creation": "2026-09-09 15:02:56.319701",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "is_shared",
+  "gstin",
   "client_id",
   "client_secret",
-  "default_gstin",
   "environment",
   "is_active",
+  "otp",
   "base_url",
   "access_token",
   "token_expires_at"
  ],
  "fields": [
   {
-   "fieldname": "is_shared",
-   "fieldtype": "Check",
-   "label": "Shared (all GSTINs)",
-   "default": "0",
-   "description": "The LitWatch GSP app used for every GSTIN. Saved as \"LitWatch GSP\". Leave unticked only for a client that must use its own GSP app; that record is named by its Default GSTIN and used for that GSTIN only."
+   "fieldname": "gstin",
+   "fieldtype": "Link",
+   "options": "GSTIN",
+   "label": "GSTIN",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "set_only_once": 1,
+   "description": "The GSTIN this GSP app is used for. The record is saved with this GSTIN as its name."
   },
   {
    "fieldname": "client_id",
@@ -40,15 +45,6 @@
    "reqd": 1
   },
   {
-   "fieldname": "default_gstin",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "GSTIN (client-specific app)",
-   "description": "Only for a client that must use its own GSP app: this record is named by this GSTIN and used for it only.",
-   "depends_on": "eval:!doc.is_shared",
-   "mandatory_depends_on": "eval:!doc.is_shared"
-  },
-  {
    "default": "Live",
    "fieldname": "environment",
    "fieldtype": "Select",
@@ -60,6 +56,13 @@
    "fieldname": "is_active",
    "fieldtype": "Check",
    "label": "Is Active"
+  },
+  {
+   "fieldname": "otp",
+   "fieldtype": "Data",
+   "label": "OTP",
+   "length": 10,
+   "description": "Latest GST portal OTP for this GSTIN. Filled automatically when the OTP is verified in LitWatch, cleared when the portal session ends. Sent as the otp header on notice calls."
   },
   {
    "fieldname": "base_url",
@@ -85,7 +88,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-05 15:00:00.000000",
+ "modified": "2026-10-10 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Adaequare Settings",
@@ -109,5 +112,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "naming_rule": "By script"
+ "naming_rule": "By fieldname",
+ "title_field": "gstin"
 }
