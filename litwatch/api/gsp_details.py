@@ -15,6 +15,19 @@ import frappe
 from frappe import _
 from frappe.utils import get_datetime, now_datetime
 
+# GST state codes (first two digits of a GSTIN)
+GST_STATES = {
+	"01": "Jammu and Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
+	"05": "Uttarakhand", "06": "Haryana", "07": "Delhi", "08": "Rajasthan", "09": "Uttar Pradesh",
+	"10": "Bihar", "11": "Sikkim", "12": "Arunachal Pradesh", "13": "Nagaland", "14": "Manipur",
+	"15": "Mizoram", "16": "Tripura", "17": "Meghalaya", "18": "Assam", "19": "West Bengal",
+	"20": "Jharkhand", "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh", "24": "Gujarat",
+	"26": "Dadra and Nagar Haveli and Daman and Diu", "27": "Maharashtra", "29": "Karnataka",
+	"30": "Goa", "31": "Lakshadweep", "32": "Kerala", "33": "Tamil Nadu", "34": "Puducherry",
+	"35": "Andaman and Nicobar Islands", "36": "Telangana", "37": "Andhra Pradesh", "38": "Ladakh",
+	"97": "Other Territory",
+}
+
 
 def _iso(value):
 	return get_datetime(value).isoformat() if value else None
@@ -33,9 +46,11 @@ def get_gstin_gsp_details(gstin=None):
 	{
 	  "gstin": "33AATCA0189J1ZD",
 	  "businessId": "32", "businessName": "Arsu Pvt Ltd",
+	  "stateCode": "33", "state": "Tamil Nadu", "city": null,
 	  "portalUserId": "arsupvtltd",
 	  "consent": "active", "consentValidUntil": "2027-10-10", "lastChecked": "...",
 	  "gsp": {"configured": true, "isActive": true, "clientId": "...", "clientSecret": "...",
+	          "accessToken": "eyJ...",
 	          "environment": "Live", "baseUrl": "https://gsp.adaequare.com",
 	          "tokenExpiresAt": "...", "tokenValid": true},
 	  "otp": {"value": "123456", "source": "adaequare_settings",
@@ -54,7 +69,7 @@ def get_gstin_gsp_details(gstin=None):
 
 	reg = frappe.db.get_value(
 		"GSTIN", gstin,
-		["business_id", "portal_user_id", "consent_status", "valid_until", "last_checked", "portal_otp"],
+		["business_id", "portal_user_id", "consent_status", "valid_until", "last_checked", "portal_otp", "state", "city"],
 		as_dict=True,
 	)
 	business_name = (
@@ -73,6 +88,7 @@ def get_gstin_gsp_details(gstin=None):
 			"isActive": bool(s.is_active),
 			"clientId": s.client_id,
 			"clientSecret": _password("Adaequare Settings", gstin, "client_secret"),
+			"accessToken": _password("Adaequare Settings", gstin, "access_token") if expires else None,
 			"environment": s.get("environment"),
 			"baseUrl": s.get("base_url") or "https://gsp.adaequare.com",
 			"tokenExpiresAt": _iso(expires),
@@ -106,6 +122,9 @@ def get_gstin_gsp_details(gstin=None):
 		"gstin": gstin,
 		"businessId": reg.business_id,
 		"businessName": business_name,
+		"stateCode": gstin[:2] if gstin[:2].isdigit() else None,
+		"state": reg.state or GST_STATES.get(gstin[:2]),
+		"city": reg.city,
 		"portalUserId": reg.portal_user_id,
 		"consent": reg.consent_status or "inactive",
 		"consentValidUntil": str(reg.valid_until) if reg.valid_until else None,
