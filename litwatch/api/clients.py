@@ -49,10 +49,47 @@ def _resolve_business(key):
 # ---------------------------------------------------------------------------
 # GET litwatch.api.clients.get_clients
 # ---------------------------------------------------------------------------
-@frappe.whitelist(methods=["GET"])
-def get_clients():
+def _allowed_business_ids(gst_user=None):
+	"""Business IDs the caller may see, or None for "all".
+
+	- gst_user given: that GST User's businesses (System Manager only, unless it is
+	  the caller's own GST User).
+	- otherwise the caller's own GST User (GST User is named by the User's email):
+	  only the businesses in its Business ID table.
+	- a System Manager without a GST User record: all businesses (firm staff).
+	- anyone else without a GST User record: none.
 	"""
-	Client roster (every Business) with summary metrics.
+	user = frappe.session.user
+	is_admin = "System Manager" in frappe.get_roles(user)
+	if gst_user:
+		gst_user = str(gst_user).strip()
+		if not frappe.db.exists("GST User", gst_user):
+			frappe.throw(_("GST User {0} not found").format(gst_user), frappe.DoesNotExistError)
+		if not is_admin and gst_user.lower() != user.lower():
+			frappe.throw(_("Not permitted to view another GST User's businesses"), frappe.PermissionError)
+	elif frappe.db.exists("GST User", user):
+		gst_user = user
+	elif is_admin:
+		return None
+	else:
+		return []
+
+	return [
+		str(b) for b in frappe.get_all(
+			"GST User Business",
+			filters={"parenttype": "GST User", "parent": gst_user},
+			pluck="business",
+			order_by="idx asc",
+		) if b
+	]
+
+
+@frappe.whitelist(methods=["GET"])
+def get_clients(gstUser=None):
+	"""
+	Client roster with summary metrics: only the Businesses that belong to the
+	GST User (see _allowed_business_ids). Optional query param gstUser=<email>
+	(System Manager only) returns that GST User's businesses.
 
 	  [{ "key": "1", "name": "...", "shortName": "...", "pan": "...", "sector": "...",
 	     "notices": 2, "demand": 0, "overdue": 0,
@@ -63,8 +100,14 @@ def get_clients():
 	the month the notice was imported). demand, overdue and resolvedData are 0:
 	Notice has no structured demand, due-date or resolved fields yet.
 	"""
+	gstUser = gstUser or _pick(_request_params(), "gstUser", "gst_user")
+	allowed = _allowed_business_ids(gstUser)
+	if allowed is not None and not allowed:
+		return []
+
 	businesses = frappe.get_all(
 		"Business",
+		filters={"name": ["in", allowed]} if allowed is not None else None,
 		fields=["name", "business_name", "short_name", "pan", "sector"],
 		order_by="name asc",
 		limit_page_length=0,
