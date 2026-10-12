@@ -13,18 +13,21 @@
  "fields": [
   {
    "fieldname": "user_email_id",
-   "fieldtype": "Data",
+   "fieldtype": "Link",
    "label": "User Email ID",
-   "options": "Email",
+   "options": "User",
    "reqd": 1,
    "unique": 1,
-   "in_list_view": 1
+   "in_list_view": 1,
+   "description": "The Frappe User (login) for this GST user. The record is named by this email."
   },
   {
    "fieldname": "user_name",
    "fieldtype": "Data",
    "label": "User Name",
-   "in_list_view": 1
+   "in_list_view": 1,
+   "fetch_from": "user_email_id.full_name",
+   "fetch_if_empty": 1
   },
   {
    "fieldname": "businesses",
@@ -36,7 +39,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-30 20:00:00.000000",
+ "modified": "2026-10-12 22:30:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "GST User",
