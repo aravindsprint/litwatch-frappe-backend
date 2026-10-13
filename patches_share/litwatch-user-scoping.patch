@@ -1,0 +1,977 @@
+From 6eb0bc15a5a91bd1131896d767e8f4de7641811a Mon Sep 17 00:00:00 2001
+From: Aravind <aravindsprint@gmail.com>
+Date: Tue, 13 Oct 2026 02:20:05 +0000
+Subject: [PATCH] Per-user scoping: every API returns only the GST User's
+ businesses
+
+New litwatch/scope.py decides which Businesses a request may see:
+- the logged-in user's GST User, or for System Manager / the shared API key the
+  GST User passed as gstUser (query, form or JSON) or X-LitWatch-GST-User header
+- System Manager users without a GST User record, and unscoped staff calls, see
+  everything; any other user without a GST User record gets 404 (as get_clients did)
+
+Applied through:
+- permission_query_conditions for Business, GSTIN, Notice, Payment, Review Queue
+  Item, Client Document, Audit Log, GST User, GST Sync Log, GST OTP Request
+  (filters every list and the Resource API, also for Administrator)
+- has_permission in those controllers (single-record read/update/delete/create,
+  which a hook alone can't do for Administrator)
+- the custom methods: get_clients, get_businesses, get_client_pipeline,
+  set_active_client, get_active_client, update_client_pipeline_stage, add_gstin,
+  get_gstin_connections, connect/verify/resend/sync, run_all_gstin_sync,
+  get_sync_log, get_sync_usage, get_client_notices, get_command_hub,
+  get_gstin_gsp_details
+- a Business created by a scoped user is added to their GST User
+
+Tests: litwatch/tests/test_user_scoping.py
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016uSTwic31grtwzMMK7rPAR
+---
+ litwatch/api/business.py                      |  19 +-
+ litwatch/api/clients.py                       |  74 ++---
+ litwatch/api/dashboard.py                     |   9 +
+ litwatch/api/gsp_details.py                   |   3 +
+ litwatch/api/gstin.py                         |  44 ++-
+ litwatch/api/notices.py                       |   3 +
+ litwatch/hooks.py                             |  29 ++
+ .../litwatch/doctype/audit_log/audit_log.py   |   8 +
+ .../litwatch/doctype/business/business.py     |  13 +
+ .../client_document/client_document.py        |   8 +-
+ .../litwatch/doctype/gst_user/gst_user.py     |   8 +-
+ litwatch/litwatch/doctype/gstin/gstin.py      |   7 +
+ litwatch/litwatch/doctype/notice/notice.py    |   8 +-
+ litwatch/litwatch/doctype/payment/payment.py  |   8 +-
+ .../review_queue_item/review_queue_item.py    |   8 +-
+ litwatch/scope.py                             | 262 ++++++++++++++++++
+ litwatch/tests/__init__.py                    |   0
+ litwatch/tests/test_user_scoping.py           | 116 ++++++++
+ 18 files changed, 561 insertions(+), 66 deletions(-)
+ create mode 100644 litwatch/scope.py
+ create mode 100644 litwatch/tests/__init__.py
+ create mode 100644 litwatch/tests/test_user_scoping.py
+
+diff --git a/litwatch/api/business.py b/litwatch/api/business.py
+index 53f5fac..c485cb5 100644
+--- a/litwatch/api/business.py
++++ b/litwatch/api/business.py
+@@ -10,6 +10,8 @@ import re
+ import frappe
+ from frappe import _
+ 
++from litwatch import scope
++
+ GSTIN_RE = re.compile(r"[0-9]{2}[A-Z0-9]{13}")
+ 
+ 
+@@ -159,6 +161,7 @@ def add_gstin(businessId=None, gstin=None, address=None, portalUserId=None):
+ 
+ 	if not businessId or not frappe.db.exists("Business", businessId):
+ 		frappe.throw(_("Business {0} not found").format(businessId or ""), frappe.DoesNotExistError)
++	scope.check_business(businessId)  # only the caller's own businesses
+ 
+ 	business = frappe.get_doc("Business", businessId)
+ 	business.check_permission("write")
+@@ -172,12 +175,22 @@ def add_gstin(businessId=None, gstin=None, address=None, portalUserId=None):
+ # ---------------------------------------------------------------------------
+ @frappe.whitelist(methods=["GET"])
+ def get_businesses():
+-	"""Every Business with its GSTINs and their consent status."""
++	"""Every Business the caller may see (litwatch/scope.py) with its GSTINs and their consent status."""
++	allowed = scope.get_scope()
++	if allowed is not None and not allowed:
++		return []
+ 	businesses = frappe.get_all(
+-		"Business", fields=["name", "business_name", "pan", "sector", "status"], order_by="name asc", limit_page_length=0
++		"Business",
++		filters={"name": ["in", allowed]} if allowed is not None else None,
++		fields=["name", "business_name", "pan", "sector", "status"],
++		order_by="name asc",
++		limit_page_length=0,
+ 	)
+ 	gstins = frappe.get_all(
+-		"GSTIN", fields=["name", "business_id", "state", "consent_status"], limit_page_length=0
++		"GSTIN",
++		filters={"business_id": ["in", allowed]} if allowed is not None else None,
++		fields=["name", "business_id", "state", "consent_status"],
++		limit_page_length=0,
+ 	)
+ 	by_business = {}
+ 	for g in gstins:
+diff --git a/litwatch/api/clients.py b/litwatch/api/clients.py
+index 46c00f0..acc6022 100644
+--- a/litwatch/api/clients.py
++++ b/litwatch/api/clients.py
+@@ -10,6 +10,7 @@ import frappe
+ from frappe import _
+ from frappe.utils import add_months, get_first_day, get_last_day, getdate, nowdate
+ 
++from litwatch import scope
+ from litwatch.api.business import new_business, onboarding_stages
+ 
+ 
+@@ -36,60 +37,32 @@ def _pick(sources, *keys):
+ 
+ 
+ def _resolve_business(key):
+-	"""Business ID from a key; also accepts a short name (e.g. old client codes like 'GT')."""
++	"""Business ID from a key; also accepts a short name (e.g. old client codes like 'GT').
++	The Business must be one the caller may see (litwatch/scope.py)."""
+ 	key = str(key).strip()
++	business_id = None
+ 	if frappe.db.exists("Business", key):
+-		return key
+-	alt = frappe.db.get_value("Business", {"short_name": key.upper()}, "name")
+-	if alt:
+-		return str(alt)
+-	frappe.throw(_("Client {0} not found").format(key), frappe.DoesNotExistError)
++		business_id = key
++	else:
++		alt = frappe.db.get_value("Business", {"short_name": key.upper()}, "name")
++		if alt:
++			business_id = str(alt)
++	if not business_id:
++		frappe.throw(_("Client {0} not found").format(key), frappe.DoesNotExistError)
++	scope.check_business(business_id)
++	return business_id
+ 
+ 
+ # ---------------------------------------------------------------------------
+ # GET litwatch.api.clients.get_clients
+ # ---------------------------------------------------------------------------
+-def _allowed_business_ids(gst_user=None):
+-	"""Business IDs the caller may see, or None for "all".
+-
+-	- gst_user given: that GST User's businesses (System Manager only, unless it is
+-	  the caller's own GST User).
+-	- otherwise the caller's own GST User (GST User is named by the User's email):
+-	  only the businesses in its Business ID table.
+-	- a System Manager without a GST User record: all businesses (firm staff).
+-	- anyone else without a GST User record: none.
+-	"""
+-	user = frappe.session.user
+-	is_admin = "System Manager" in frappe.get_roles(user)
+-	if gst_user:
+-		gst_user = str(gst_user).strip()
+-		if not frappe.db.exists("GST User", gst_user):
+-			frappe.throw(_("GST User {0} not found").format(gst_user), frappe.DoesNotExistError)
+-		if not is_admin and gst_user.lower() != user.lower():
+-			frappe.throw(_("Not permitted to view another GST User's businesses"), frappe.PermissionError)
+-	elif frappe.db.exists("GST User", user):
+-		gst_user = user
+-	elif is_admin:
+-		return None
+-	else:
+-		return []
+-
+-	return [
+-		str(b) for b in frappe.get_all(
+-			"GST User Business",
+-			filters={"parenttype": "GST User", "parent": gst_user},
+-			pluck="business",
+-			order_by="idx asc",
+-		) if b
+-	]
+-
+-
+ @frappe.whitelist(methods=["GET"])
+ def get_clients(gstUser=None):
+ 	"""
+ 	Client roster with summary metrics: only the Businesses that belong to the
+-	GST User (see _allowed_business_ids). Optional query param gstUser=<email>
+-	(System Manager only) returns that GST User's businesses.
++	GST User (see litwatch/scope.py). The GST User comes from the logged-in user,
++	or, for System Manager / the shared API key, from gstUser=<email> or the
++	X-LitWatch-GST-User header.
+ 
+ 	  [{ "key": "1", "name": "...", "shortName": "...", "pan": "...", "sector": "...",
+ 	     "notices": 2, "demand": 0, "overdue": 0,
+@@ -100,8 +73,7 @@ def get_clients(gstUser=None):
+ 	the month the notice was imported). demand, overdue and resolvedData are 0:
+ 	Notice has no structured demand, due-date or resolved fields yet.
+ 	"""
+-	gstUser = gstUser or _pick(_request_params(), "gstUser", "gst_user")
+-	allowed = _allowed_business_ids(gstUser)
++	allowed = scope.get_scope()  # gstUser / X-LitWatch-GST-User, see litwatch/scope.py
+ 	if allowed is not None and not allowed:
+ 		return []
+ 
+@@ -218,6 +190,8 @@ def get_active_client():
+ 	client_key = frappe.defaults.get_user_default("active_client") or None
+ 	if client_key and not frappe.db.exists("Business", client_key):
+ 		client_key = None  # stale value (e.g. an old Client code)
++	if client_key and not scope.business_allowed(client_key):
++		client_key = None  # not one of this GST User's businesses
+ 
+ 	frappe.local.response.update({"clientKey": client_key})
+ 	frappe.local.response.http_status_code = 200
+@@ -230,9 +204,17 @@ def get_active_client():
+ @frappe.whitelist(methods=["GET"])
+ def get_client_pipeline():
+ 	"""Businesses still onboarding (stage not Complete), sorted by stage then date."""
++	filters = {"onboarding_stage": ["!=", "Complete"]}
++	allowed = scope.get_scope()
++	if allowed is not None:
++		if not allowed:
++			frappe.local.response.update({"data": []})
++			frappe.local.response.http_status_code = 200
++			return
++		filters["name"] = ["in", allowed]
+ 	businesses = frappe.get_all(
+ 		"Business",
+-		filters={"onboarding_stage": ["!=", "Complete"]},
++		filters=filters,
+ 		fields=["name", "business_name", "sector", "onboarding_stage", "onboarding_date"],
+ 		limit_page_length=0,
+ 	)
+diff --git a/litwatch/api/dashboard.py b/litwatch/api/dashboard.py
+index 6b7e894..0b37968 100644
+--- a/litwatch/api/dashboard.py
++++ b/litwatch/api/dashboard.py
+@@ -21,6 +21,8 @@ from datetime import date, datetime, timedelta
+ 
+ import frappe
+ from frappe import _
++
++from litwatch import scope
+ from frappe.utils import cint, getdate, nowdate
+ 
+ # ---------------------------------------------------------------------------
+@@ -435,11 +437,18 @@ def get_command_hub(client_key=None, gstin=None, months=12, priority_limit=5, as
+ 
+ 	filters = [["docstatus", "!=", 2]]  # cancelled notices are left out
+ 	or_filters = None
++	allowed = scope.get_scope()  # litwatch/scope.py
+ 	if client_key:
+ 		business_id = _resolve_business(client_key)
++		scope.check_business(business_id)
+ 		gstins = frappe.get_all("GSTIN", filters={"business_id": business_id}, pluck="name")
+ 		or_filters = [["business_id", "=", business_id]] + ([["gstin", "in", gstins]] if gstins else [])
++	elif allowed is not None:
++		# No client chosen: all of the caller's businesses, never anyone else's
++		my_gstins = scope.scope_gstins(allowed)
++		or_filters = [["business_id", "in", allowed or ["__none__"]]] + ([["gstin", "in", my_gstins]] if my_gstins else [])
+ 	if gstin:
++		scope.check_gstin(gstin)
+ 		filters.append(["gstin", "=", str(gstin).strip().upper()])
+ 
+ 	rows = frappe.get_all("Notice", filters=filters, or_filters=or_filters, fields=fields,
+diff --git a/litwatch/api/gsp_details.py b/litwatch/api/gsp_details.py
+index e641637..1f809ab 100644
+--- a/litwatch/api/gsp_details.py
++++ b/litwatch/api/gsp_details.py
+@@ -13,6 +13,8 @@ Contains secrets: only System Manager may call it, and every call is logged.
+ 
+ import frappe
+ from frappe import _
++
++from litwatch import scope
+ from frappe.utils import get_datetime, now_datetime
+ 
+ # GST state codes (first two digits of a GSTIN)
+@@ -66,6 +68,7 @@ def get_gstin_gsp_details(gstin=None):
+ 		frappe.throw(_("gstin is required"))
+ 	if not frappe.db.exists("GSTIN", gstin):
+ 		frappe.throw(_("GSTIN {0} not found").format(gstin), frappe.DoesNotExistError)
++	scope.check_gstin(gstin)  # with gstUser: only that GST User's GSTINs
+ 
+ 	reg = frappe.db.get_value(
+ 		"GSTIN", gstin,
+diff --git a/litwatch/api/gstin.py b/litwatch/api/gstin.py
+index 3d5f310..059e67b 100644
+--- a/litwatch/api/gstin.py
++++ b/litwatch/api/gstin.py
+@@ -9,6 +9,7 @@ import frappe
+ from frappe import _
+ from frappe.utils import add_months, add_to_date, get_datetime, getdate, now_datetime, nowdate
+ 
++from litwatch import scope
+ from litwatch.api import gst_portal
+ 
+ VALID_CONSENT = ("inactive", "pending", "active", "expired")
+@@ -49,6 +50,7 @@ def _get_registration(gstin, ptype="write"):
+ 		frappe.throw(_("gstin is required"))
+ 	if not frappe.db.exists("GSTIN", gstin):
+ 		frappe.throw(_("GSTIN {0} not found. Add it to a Business first.").format(gstin), frappe.DoesNotExistError)
++	scope.check_gstin(gstin)  # only GSTINs of the caller's own businesses
+ 	reg = frappe.get_doc("GSTIN", gstin)
+ 	if ptype:
+ 		reg.check_permission(ptype)
+@@ -103,9 +105,13 @@ def _new_otp_request(gstin, otp_sent_to, status="pending"):
+ # ---------------------------------------------------------------------------
+ @frappe.whitelist(methods=["GET"])
+ def get_gstin_connections():
+-	"""Every GSTIN (GSTIN doctype) with its business, consent and notice count."""
++	"""Every GSTIN the caller may see (litwatch/scope.py) with its business, consent and notice count."""
++	allowed = scope.get_scope()
++	if allowed is not None and not allowed:
++		return []
+ 	gstins = frappe.get_all(
+ 		"GSTIN",
++		filters={"business_id": ["in", allowed]} if allowed is not None else None,
+ 		fields=["name", "city", "state", "business_id", "consent_status", "valid_until", "last_checked"],
+ 		order_by="modified desc",
+ 		limit_page_length=0,
+@@ -500,11 +506,14 @@ def _mark_run_progress(run_id):
+ # ---------------------------------------------------------------------------
+ @frappe.whitelist(methods=["POST"])
+ def run_all_gstin_sync():
++	# Only the caller's GSTINs (litwatch/scope.py); unscoped staff calls still sync every GSTIN.
++	filters = {"consent_status": "active"}
++	allowed = scope.get_scope()
++	if allowed is not None:
++		filters["business_id"] = ["in", allowed or ["__none__"]]
+ 	gstins = [
+ 		g
+-		for g in frappe.get_all(
+-			"GSTIN", filters={"consent_status": "active"}, pluck="name", limit_page_length=0
+-		)
++		for g in frappe.get_all("GSTIN", filters=filters, pluck="name", limit_page_length=0)
+ 		if frappe.has_permission("GSTIN", "write", g)
+ 	]
+ 
+@@ -553,15 +562,21 @@ def get_sync_usage():
+ 
+ 	week_start = frappe.utils.add_days(today_d, -today_d.weekday())
+ 	week_end = frappe.utils.add_days(week_start, 6)
+-	notices_this_week = frappe.db.count(
+-		"Notice",
+-		filters={
+-			"portal_ref_id": ["is", "set"],
+-			"creation": ["between", [f"{week_start} 00:00:00", f"{week_end} 23:59:59"]],
+-		},
+-	)
++	# Notice and skipped-run counts follow the caller's scope; the portal call cap,
++	# token and per-endpoint calls are firm-wide (one GSP account) and stay global.
++	allowed = scope.get_scope()
++	my_gstins = scope.scope_gstins(allowed) if allowed is not None else None
++	notice_filters = {
++		"portal_ref_id": ["is", "set"],
++		"creation": ["between", [f"{week_start} 00:00:00", f"{week_end} 23:59:59"]],
++	}
++	log_filters = {"status": "skipped"}
++	if my_gstins is not None:
++		notice_filters["gstin"] = ["in", my_gstins or ["__none__"]]
++		log_filters["gstin"] = ["in", my_gstins or ["__none__"]]
++	notices_this_week = frappe.db.count("Notice", filters=notice_filters)
+ 
+-	skipped_runs = frappe.db.count("GST Sync Log", filters={"status": "skipped"})
++	skipped_runs = frappe.db.count("GST Sync Log", filters=log_filters)
+ 
+ 	by_endpoint = frappe.db.sql(
+ 		"""
+@@ -594,7 +609,12 @@ def get_sync_log(gstin=None):
+ 	if gstin:
+ 		if not frappe.db.exists("GSTIN", gstin):
+ 			frappe.throw(_("GSTIN {0} not found").format(gstin), frappe.DoesNotExistError)
++		scope.check_gstin(gstin)
+ 		filters["gstin"] = gstin
++	else:
++		allowed = scope.get_scope()
++		if allowed is not None:
++			filters["gstin"] = ["in", scope.scope_gstins(allowed) or ["__none__"]]
+ 
+ 	rows = frappe.get_all(
+ 		"GST Sync Log",
+diff --git a/litwatch/api/notices.py b/litwatch/api/notices.py
+index ebb16ae..13f2a8f 100644
+--- a/litwatch/api/notices.py
++++ b/litwatch/api/notices.py
+@@ -13,6 +13,8 @@ import json
+ 
+ import frappe
+ from frappe import _
++
++from litwatch import scope
+ from frappe.utils import cint, getdate
+ 
+ # Shown in the list view; everything else comes with full=1
+@@ -103,6 +105,7 @@ def get_client_notices(
+ 		frappe.throw(_("Not permitted to read notices"), frappe.PermissionError)
+ 
+ 	business_id = _resolve_business(client_key)
++	scope.check_business(business_id)  # only the caller's own businesses (litwatch/scope.py)
+ 	meta = frappe.get_meta("Notice")
+ 	has = lambda f: bool(meta.get_field(f)) or f in ("name", "docstatus", "creation", "modified")
+ 
+diff --git a/litwatch/hooks.py b/litwatch/hooks.py
+index 25119ba..28fa80d 100644
+--- a/litwatch/hooks.py
++++ b/litwatch/hooks.py
+@@ -253,3 +253,32 @@ app_license = "mit"
+ # List of apps whose translatable strings should be excluded from this app's translations.
+ # ignore_translatable_strings_from = []
+ 
++
++# ---------------------------------------------------------------------------
++# Per-user scoping (litwatch/scope.py): lists are filtered to the GST User's
++# Businesses. Single records are also checked in each controller's
++# has_permission, which covers Administrator / the shared API key.
++# ---------------------------------------------------------------------------
++permission_query_conditions = {
++	"Business": "litwatch.scope.business_query",
++	"GSTIN": "litwatch.scope.gstin_query",
++	"Notice": "litwatch.scope.notice_query",
++	"Payment": "litwatch.scope.payment_query",
++	"Review Queue Item": "litwatch.scope.review_queue_item_query",
++	"Client Document": "litwatch.scope.client_document_query",
++	"Audit Log": "litwatch.scope.audit_log_query",
++	"GST User": "litwatch.scope.gst_user_query",
++	"GST Sync Log": "litwatch.scope.gst_sync_log_query",
++	"GST OTP Request": "litwatch.scope.gst_otp_request_query",
++}
++
++has_permission = {
++	"Business": "litwatch.scope.has_permission",
++	"GSTIN": "litwatch.scope.has_permission",
++	"Notice": "litwatch.scope.has_permission",
++	"Payment": "litwatch.scope.has_permission",
++	"Review Queue Item": "litwatch.scope.has_permission",
++	"Client Document": "litwatch.scope.has_permission",
++	"Audit Log": "litwatch.scope.has_permission",
++	"GST User": "litwatch.scope.has_permission",
++}
+diff --git a/litwatch/litwatch/doctype/audit_log/audit_log.py b/litwatch/litwatch/doctype/audit_log/audit_log.py
+index 1c15c5a..8565ef5 100644
+--- a/litwatch/litwatch/doctype/audit_log/audit_log.py
++++ b/litwatch/litwatch/doctype/audit_log/audit_log.py
+@@ -10,6 +10,14 @@ from frappe.utils import now_datetime
+ class AuditLog(Document):
+ 	"""Append-only: rows can be created but never edited or deleted."""
+ 
++	def has_permission(self, permtype="read", *, debug=False, user=None):
++		# Per-user scoping (litwatch/scope.py); also applies to Administrator / the shared API key
++		from litwatch.scope import doc_in_scope
++
++		if not doc_in_scope(self):
++			return False
++		return super().has_permission(permtype, debug=debug, user=user)
++
+ 	def validate(self):
+ 		if not self.is_new():
+ 			frappe.throw(_("Audit Log entries cannot be edited"), frappe.PermissionError)
+diff --git a/litwatch/litwatch/doctype/business/business.py b/litwatch/litwatch/doctype/business/business.py
+index 52b77fe..d8b9076 100644
+--- a/litwatch/litwatch/doctype/business/business.py
++++ b/litwatch/litwatch/doctype/business/business.py
+@@ -7,6 +7,13 @@ from frappe.model.document import Document
+ 
+ 
+ class Business(Document):
++	def has_permission(self, permtype="read", *, debug=False, user=None):
++		# Per-user scoping (litwatch/scope.py); also applies to Administrator / the shared API key
++		from litwatch.scope import doc_in_scope
++
++		if not doc_in_scope(self):
++			return False
++		return super().has_permission(permtype, debug=debug, user=user)
+ 	def validate(self):
+ 		seen = set()
+ 		rows = []
+@@ -21,6 +28,12 @@ class Business(Document):
+ 		if len(rows) != len(self.get("gstins") or []):
+ 			self.set("gstins", rows)
+ 
++	def after_insert(self):
++		# A client (or the frontend acting for one) creating a business keeps seeing it.
++		from litwatch.scope import link_business_to_scope_user
++
++		link_business_to_scope_user(self.name)
++
+ 	def on_update(self):
+ 		# Keep GSTIN.business_id in step with this table (skip when GSTIN is the one syncing us).
+ 		if self.flags.from_gstin_sync:
+diff --git a/litwatch/litwatch/doctype/client_document/client_document.py b/litwatch/litwatch/doctype/client_document/client_document.py
+index 4a2bec8..1b3183d 100644
+--- a/litwatch/litwatch/doctype/client_document/client_document.py
++++ b/litwatch/litwatch/doctype/client_document/client_document.py
+@@ -6,4 +6,10 @@ from frappe.model.document import Document
+ 
+ 
+ class ClientDocument(Document):
+-	pass
++	def has_permission(self, permtype="read", *, debug=False, user=None):
++		# Per-user scoping (litwatch/scope.py); also applies to Administrator / the shared API key
++		from litwatch.scope import doc_in_scope
++
++		if not doc_in_scope(self):
++			return False
++		return super().has_permission(permtype, debug=debug, user=user)
+diff --git a/litwatch/litwatch/doctype/gst_user/gst_user.py b/litwatch/litwatch/doctype/gst_user/gst_user.py
+index f6a4a83..f2384f3 100644
+--- a/litwatch/litwatch/doctype/gst_user/gst_user.py
++++ b/litwatch/litwatch/doctype/gst_user/gst_user.py
+@@ -5,4 +5,10 @@ from frappe.model.document import Document
+ 
+ 
+ class GSTUser(Document):
+-	pass
++	def has_permission(self, permtype="read", *, debug=False, user=None):
++		# Per-user scoping (litwatch/scope.py); also applies to Administrator / the shared API key
++		from litwatch.scope import doc_in_scope
++
++		if not doc_in_scope(self):
++			return False
++		return super().has_permission(permtype, debug=debug, user=user)
+diff --git a/litwatch/litwatch/doctype/gstin/gstin.py b/litwatch/litwatch/doctype/gstin/gstin.py
+index a6e2e11..7be9401 100644
+--- a/litwatch/litwatch/doctype/gstin/gstin.py
++++ b/litwatch/litwatch/doctype/gstin/gstin.py
+@@ -11,6 +11,13 @@ GSTIN_RE = re.compile(r"[0-9]{2}[A-Z0-9]{13}")
+ 
+ 
+ class GSTIN(Document):
++	def has_permission(self, permtype="read", *, debug=False, user=None):
++		# Per-user scoping (litwatch/scope.py); also applies to Administrator / the shared API key
++		from litwatch.scope import doc_in_scope
++
++		if not doc_in_scope(self):
++			return False
++		return super().has_permission(permtype, debug=debug, user=user)
+ 	def before_insert(self):
+ 		# Upper-case before the record is named after it.
+ 		self.gstin = (self.gstin or "").strip().upper()
+diff --git a/litwatch/litwatch/doctype/notice/notice.py b/litwatch/litwatch/doctype/notice/notice.py
+index 5d9acea..9122068 100644
+--- a/litwatch/litwatch/doctype/notice/notice.py
++++ b/litwatch/litwatch/doctype/notice/notice.py
+@@ -6,4 +6,10 @@ from frappe.model.document import Document
+ 
+ 
+ class Notice(Document):
+-	pass
++	def has_permission(self, permtype="read", *, debug=False, user=None):
++		# Per-user scoping (litwatch/scope.py); also applies to Administrator / the shared API key
++		from litwatch.scope import doc_in_scope
++
++		if not doc_in_scope(self):
++			return False
++		return super().has_permission(permtype, debug=debug, user=user)
+diff --git a/litwatch/litwatch/doctype/payment/payment.py b/litwatch/litwatch/doctype/payment/payment.py
+index 7631dfe..7de30a0 100644
+--- a/litwatch/litwatch/doctype/payment/payment.py
++++ b/litwatch/litwatch/doctype/payment/payment.py
+@@ -6,4 +6,10 @@ from frappe.model.document import Document
+ 
+ 
+ class Payment(Document):
+-	pass
++	def has_permission(self, permtype="read", *, debug=False, user=None):
++		# Per-user scoping (litwatch/scope.py); also applies to Administrator / the shared API key
++		from litwatch.scope import doc_in_scope
++
++		if not doc_in_scope(self):
++			return False
++		return super().has_permission(permtype, debug=debug, user=user)
+diff --git a/litwatch/litwatch/doctype/review_queue_item/review_queue_item.py b/litwatch/litwatch/doctype/review_queue_item/review_queue_item.py
+index 6322c71..98109ba 100644
+--- a/litwatch/litwatch/doctype/review_queue_item/review_queue_item.py
++++ b/litwatch/litwatch/doctype/review_queue_item/review_queue_item.py
+@@ -6,4 +6,10 @@ from frappe.model.document import Document
+ 
+ 
+ class ReviewQueueItem(Document):
+-	pass
++	def has_permission(self, permtype="read", *, debug=False, user=None):
++		# Per-user scoping (litwatch/scope.py); also applies to Administrator / the shared API key
++		from litwatch.scope import doc_in_scope
++
++		if not doc_in_scope(self):
++			return False
++		return super().has_permission(permtype, debug=debug, user=user)
+diff --git a/litwatch/scope.py b/litwatch/scope.py
+new file mode 100644
+index 0000000..81cd914
+--- /dev/null
++++ b/litwatch/scope.py
+@@ -0,0 +1,262 @@
++# apps/litwatch/litwatch/scope.py
++"""
++Per-user scoping: which Businesses (clients) the current request may see.
++
++Who is asking
++-------------
++- A user who is not System Manager (a client logging in as themselves): their
++  own GST User record decides.
++- System Manager / Administrator (the frontend's shared API key): the GST User
++  passed with the request decides, via the header ``X-LitWatch-GST-User`` or the
++  ``gstUser`` parameter (query string, form or JSON body). Without one, the
++  request is not scoped (firm staff see everything).
++
++What they see
++-------------
++- GST User found: only the Businesses in its ``businesses`` table, and the
++  GSTINs, Notices, Payments, Review Queue Items, Client Documents, Audit Log
++  entries, sync logs and OTP requests that belong to those Businesses.
++- No GST User record, but the user is System Manager (firm staff): everything.
++- Anyone else without a GST User record: "GST User ... not found" (HTTP 404),
++  the same answer get_clients has always given, so the frontend's existing
++  fallback keeps working.
++
++get_scope() returns None for "everything", otherwise a list of Business IDs
++(possibly empty). Background jobs and system code (no request, or
++ignore_permissions) are never scoped.
++"""
++
++import frappe
++from frappe import _
++
++HEADER = "X-LitWatch-GST-User"
++PARAMS = ("gstUser", "gst_user")
++STAFF_ROLE = "System Manager"
++_CACHE = "litwatch_scope_cache"
++
++
++# ---------------------------------------------------------------------------
++# Who / what
++# ---------------------------------------------------------------------------
++def _is_staff(user):
++	return user == "Administrator" or STAFF_ROLE in frappe.get_roles(user)
++
++
++def requested_gst_user():
++	"""GST User named by the request (header or gstUser param), or None."""
++	value = None
++	try:
++		if getattr(frappe.local, "request", None):
++			value = frappe.get_request_header(HEADER)
++	except Exception:
++		value = None
++	if not value:
++		fd = frappe.local.form_dict if getattr(frappe.local, "form_dict", None) else {}
++		for key in PARAMS:
++			if fd.get(key):
++				value = fd.get(key)
++				break
++	value = str(value or "").strip()
++	return value or None
++
++
++def scope_user():
++	"""The GST User email the current request is scoped to, or None when unscoped."""
++	user = frappe.session.user if getattr(frappe.local, "session", None) else "Guest"
++	if _is_staff(user):
++		return requested_gst_user()
++	return user
++
++
++def _businesses_of(gst_user):
++	return sorted(
++		{
++			str(b)
++			for b in frappe.get_all(
++				"GST User Business",
++				filters={"parenttype": "GST User", "parent": gst_user},
++				pluck="business",
++			)
++			if b
++		},
++		key=lambda x: (len(x), x),
++	)
++
++
++def get_scope():
++	"""None = everything; otherwise the list of Business IDs the request may see."""
++	cache = frappe.local.__dict__.setdefault(_CACHE, {})
++	user = frappe.session.user if getattr(frappe.local, "session", None) else "Guest"
++	key = (user, requested_gst_user())
++	if key in cache:
++		return cache[key]
++
++	gst_user = scope_user()
++	if user == "Guest":
++		scope = []  # not logged in: nothing
++	elif not gst_user:
++		scope = None
++	elif frappe.db.exists("GST User", gst_user):
++		scope = _businesses_of(gst_user)
++	elif frappe.db.exists("User", gst_user) and _is_staff(gst_user):
++		scope = None  # firm staff: everything
++	else:
++		frappe.throw(_("GST User {0} not found").format(gst_user), frappe.DoesNotExistError)
++
++	cache[key] = scope
++	return scope
++
++
++def add_to_scope(business_id):
++	"""Make a just-created Business visible for the rest of this request."""
++	cache = frappe.local.__dict__.get(_CACHE) or {}
++	for scope in cache.values():
++		if scope is not None and str(business_id) not in scope:
++			scope.append(str(business_id))
++
++
++def scope_gstins(scope=None):
++	scope = get_scope() if scope is None else scope
++	if not scope:
++		return []
++	return frappe.get_all("GSTIN", filters={"business_id": ["in", scope]}, pluck="name")
++
++
++# ---------------------------------------------------------------------------
++# Checks used by the API methods
++# ---------------------------------------------------------------------------
++def business_allowed(business_id):
++	scope = get_scope()
++	return scope is None or str(business_id or "") in scope
++
++
++def check_business(business_id):
++	if not business_allowed(business_id):
++		frappe.throw(_("Not permitted to access client {0}").format(business_id), frappe.PermissionError)
++
++
++def gstin_allowed(gstin):
++	scope = get_scope()
++	if scope is None:
++		return True
++	owner = frappe.db.get_value("GSTIN", str(gstin or "").strip().upper(), "business_id")
++	return bool(owner) and str(owner) in scope
++
++
++def check_gstin(gstin):
++	if not gstin_allowed(gstin):
++		frappe.throw(_("Not permitted to access GSTIN {0}").format(gstin), frappe.PermissionError)
++
++
++def notice_allowed(business_id=None, gstin=None, scope=None, gstins=None):
++	scope = get_scope() if scope is None else scope
++	if scope is None:
++		return True
++	if business_id and str(business_id) in scope:
++		return True
++	if gstin:
++		gstins = scope_gstins(scope) if gstins is None else gstins
++		return str(gstin).upper() in gstins
++	return False
++
++
++def link_business_to_scope_user(business_id):
++	"""Add a newly created Business to the creator's GST User, so it stays in their list."""
++	gst_user = scope_user()
++	if not gst_user or not frappe.db.exists("GST User", gst_user):
++		return
++	if str(business_id) in _businesses_of(gst_user):
++		return
++	doc = frappe.get_doc("GST User", gst_user)
++	doc.append("businesses", {"business": str(business_id)})
++	doc.save(ignore_permissions=True)
++	add_to_scope(business_id)
++
++
++# ---------------------------------------------------------------------------
++# Document-level check (called from the controllers' has_permission)
++# ---------------------------------------------------------------------------
++def doc_in_scope(doc):
++	if doc.flags.ignore_permissions:
++		return True
++	scope = get_scope()
++	if scope is None:
++		return True
++	dt = doc.doctype
++	if dt == "Business":
++		return doc.is_new() or str(doc.name) in scope
++	if dt == "GSTIN":
++		return str(doc.business_id or "") in scope
++	if dt == "Notice":
++		return notice_allowed(doc.get("business_id"), doc.get("gstin"), scope)
++	if dt in ("Payment", "Review Queue Item", "Client Document", "Audit Log"):
++		return str(doc.get("client") or "") in scope
++	if dt == "GST User":
++		return (doc.name or "").lower() == (scope_user() or "").lower()
++	return True
++
++
++def has_permission(doc, ptype=None, user=None, debug=False):
++	"""has_permission hook: deny records outside the scope, otherwise defer (None)."""
++	if isinstance(doc, str):
++		return None
++	return False if not doc_in_scope(doc) else None
++
++
++# ---------------------------------------------------------------------------
++# List conditions (permission_query_conditions hooks; applied to get_list and
++# the Resource API, also for Administrator)
++# ---------------------------------------------------------------------------
++def _in(column, values):
++	if not values:
++		return "1=0"
++	return "{} in ({})".format(column, ", ".join(frappe.db.escape(str(v)) for v in values))
++
++
++def _cond(builder):
++	scope = get_scope()
++	if scope is None:
++		return ""
++	return builder(scope)
++
++
++def business_query(user=None, doctype=None):
++	return _cond(lambda s: _in("`tabBusiness`.`name`", s))
++
++
++def gstin_query(user=None, doctype=None):
++	return _cond(lambda s: _in("`tabGSTIN`.`business_id`", s))
++
++
++def notice_query(user=None, doctype=None):
++	def build(s):
++		parts = [_in("`tabNotice`.`business_id`", s)]
++		g = scope_gstins(s)
++		if g:
++			parts.append(_in("`tabNotice`.`gstin`", g))
++		return "(" + " or ".join(parts) + ")"
++	return _cond(build)
++
++
++def _client_query(table):
++	return lambda user=None, doctype=None: _cond(lambda s: _in(f"`tab{table}`.`client`", s))
++
++
++payment_query = _client_query("Payment")
++review_queue_item_query = _client_query("Review Queue Item")
++client_document_query = _client_query("Client Document")
++audit_log_query = _client_query("Audit Log")
++
++
++def gst_user_query(user=None, doctype=None):
++	if get_scope() is None:
++		return ""
++	return "`tabGST User`.`name` = {}".format(frappe.db.escape(scope_user() or ""))
++
++
++def gst_sync_log_query(user=None, doctype=None):
++	return _cond(lambda s: _in("`tabGST Sync Log`.`gstin`", scope_gstins(s)))
++
++
++def gst_otp_request_query(user=None, doctype=None):
++	return _cond(lambda s: _in("`tabGST OTP Request`.`gstin`", scope_gstins(s)))
+diff --git a/litwatch/tests/__init__.py b/litwatch/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/litwatch/tests/test_user_scoping.py b/litwatch/tests/test_user_scoping.py
+new file mode 100644
+index 0000000..d188b19
+--- /dev/null
++++ b/litwatch/tests/test_user_scoping.py
+@@ -0,0 +1,116 @@
++# Run: bench --site <site> set-config allow_tests true
++#      bench --site <site> run-tests --module litwatch.tests.test_user_scoping
++# Everything is created inside the test and rolled back afterwards.
++
++import frappe
++from frappe.tests.utils import FrappeTestCase
++
++from litwatch import scope
++
++GSTIN_A = "33SCOPA0001A1Z1"
++GSTIN_B = "33SCOPB0002B1Z2"
++CLIENT_EMAIL = "scope-test-client@example.com"
++
++
++def as_gst_user(email=None):
++	"""Act like the frontend: shared key (Administrator) + gstUser."""
++	frappe.set_user("Administrator")
++	frappe.local.form_dict = frappe._dict({"gstUser": email} if email else {})
++	frappe.local.__dict__.pop(scope._CACHE, None)
++
++
++class TestUserScoping(FrappeTestCase):
++	@classmethod
++	def setUpClass(cls):
++		super().setUpClass()
++		frappe.set_user("Administrator")
++		frappe.local.response = frappe._dict()
++		cls.biz_a = frappe.get_doc({"doctype": "Business", "business_name": "Scope Test A"}).insert(ignore_permissions=True).name
++		cls.biz_b = frappe.get_doc({"doctype": "Business", "business_name": "Scope Test B"}).insert(ignore_permissions=True).name
++		for gstin, biz in ((GSTIN_A, cls.biz_a), (GSTIN_B, cls.biz_b)):
++			frappe.get_doc({"doctype": "GSTIN", "gstin": gstin, "business_id": str(biz), "consent_status": "active"}).insert(ignore_permissions=True)
++		cls.notice_a = frappe.get_doc({"doctype": "Notice", "business_id": str(cls.biz_a)}).insert(ignore_permissions=True).name
++		cls.notice_b = frappe.get_doc({"doctype": "Notice", "business_id": str(cls.biz_b)}).insert(ignore_permissions=True).name
++		cls.notice_gstin_a = frappe.get_doc({"doctype": "Notice", "gstin": GSTIN_A}).insert(ignore_permissions=True).name
++		if not frappe.db.exists("User", CLIENT_EMAIL):
++			frappe.get_doc({"doctype": "User", "email": CLIENT_EMAIL, "first_name": "Scope Client",
++			                "user_type": "Website User", "send_welcome_email": 0}).insert(ignore_permissions=True)
++		frappe.get_doc({"doctype": "GST User", "user_email_id": CLIENT_EMAIL, "user_name": "Scope Client",
++		                "businesses": [{"business": str(cls.biz_a)}]}).insert(ignore_permissions=True)
++
++	def tearDown(self):
++		as_gst_user(None)
++
++	def names(self, doctype, **kw):
++		return {str(n) for n in frappe.get_list(doctype, pluck="name", limit_page_length=0, **kw)}
++
++	# --- unscoped (firm staff) -------------------------------------------
++	def test_unscoped_sees_everything(self):
++		as_gst_user(None)
++		self.assertIsNone(scope.get_scope())
++		self.assertTrue({str(self.biz_a), str(self.biz_b)} <= self.names("Business"))
++
++	# --- lists (Resource API uses get_list) ------------------------------
++	def test_lists_are_filtered(self):
++		as_gst_user(CLIENT_EMAIL)
++		self.assertEqual(scope.get_scope(), [str(self.biz_a)])
++		self.assertIn(str(self.biz_a), self.names("Business"))
++		self.assertNotIn(str(self.biz_b), self.names("Business"))
++		self.assertEqual({GSTIN_A}, self.names("GSTIN", filters={"name": ["in", [GSTIN_A, GSTIN_B]]}))
++		notices = self.names("Notice", filters={"name": ["in", [self.notice_a, self.notice_b, self.notice_gstin_a]]})
++		self.assertEqual({self.notice_a, self.notice_gstin_a}, notices)
++		self.assertEqual({CLIENT_EMAIL}, self.names("GST User"))
++
++	# --- single records (Resource API read/update/delete) ----------------
++	def test_single_records_are_checked(self):
++		as_gst_user(CLIENT_EMAIL)
++		self.assertTrue(frappe.get_doc("Notice", self.notice_a).has_permission("read"))
++		self.assertFalse(frappe.get_doc("Notice", self.notice_b).has_permission("read"))
++		self.assertFalse(frappe.get_doc("Business", self.biz_b).has_permission("write"))
++		self.assertFalse(frappe.get_doc("GSTIN", GSTIN_B).has_permission("read"))
++		with self.assertRaises(frappe.PermissionError):
++			frappe.get_doc("Notice", self.notice_b).check_permission("read")
++		with self.assertRaises(frappe.PermissionError):
++			frappe.get_doc({"doctype": "Notice", "business_id": str(self.biz_b)}).insert()
++
++	# --- custom methods --------------------------------------------------
++	def test_custom_methods(self):
++		from litwatch.api.business import add_gstin, get_businesses
++		from litwatch.api.clients import get_clients
++		from litwatch.api.dashboard import get_command_hub
++		from litwatch.api.gstin import connect_gstin, get_gstin_connections, run_all_gstin_sync
++		from litwatch.api.notices import get_client_notices
++
++		as_gst_user(CLIENT_EMAIL)
++		frappe.local.response = frappe._dict()
++		self.assertEqual([str(self.biz_a)], [c["key"] for c in get_clients()])
++		self.assertEqual([str(self.biz_a)], [b["businessId"] for b in get_businesses()])
++		self.assertEqual({GSTIN_A}, {g["gstin"] for g in get_gstin_connections()})
++		self.assertGreaterEqual(get_client_notices(client_key=str(self.biz_a))["total"], 2)
++		for call in (
++			lambda: get_client_notices(client_key=str(self.biz_b)),
++			lambda: get_command_hub(client_key=str(self.biz_b)),
++			lambda: connect_gstin(gstin=GSTIN_B, portalUserId="x"),
++			lambda: add_gstin(businessId=str(self.biz_b), gstin="33SCOPC0003C1Z3"),
++		):
++			with self.assertRaises(frappe.PermissionError):
++				call()
++		self.assertEqual(1, run_all_gstin_sync()["gstinsQueued"])  # only GSTIN_A
++		hub = get_command_hub()
++		ids = {r["id"] for r in hub["activeNotices"]["rows"]}
++		self.assertNotIn(self.notice_b, ids)
++
++	def test_new_business_is_linked_to_creator(self):
++		from litwatch.api.business import create_business
++
++		as_gst_user(CLIENT_EMAIL)
++		frappe.local.response = frappe._dict()
++		new_id = create_business(name="Scope Test New")["businessId"]
++		self.assertIn(new_id, scope.get_scope())
++		businesses = {r.business for r in frappe.get_doc("GST User", CLIENT_EMAIL).businesses}
++		self.assertIn(new_id, {str(b) for b in businesses})
++
++	def test_unknown_gst_user(self):
++		as_gst_user("nobody-at-all@example.com")
++		with self.assertRaises(frappe.DoesNotExistError):
++			scope.get_scope()
+-- 
+2.43.0
+
