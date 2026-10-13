@@ -253,3 +253,32 @@ app_license = "mit"
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
 
+
+# ---------------------------------------------------------------------------
+# Per-user scoping (litwatch/scope.py): lists are filtered to the GST User's
+# Businesses. Single records are also checked in each controller's
+# has_permission, which covers Administrator / the shared API key.
+# ---------------------------------------------------------------------------
+permission_query_conditions = {
+	"Business": "litwatch.scope.business_query",
+	"GSTIN": "litwatch.scope.gstin_query",
+	"Notice": "litwatch.scope.notice_query",
+	"Payment": "litwatch.scope.payment_query",
+	"Review Queue Item": "litwatch.scope.review_queue_item_query",
+	"Client Document": "litwatch.scope.client_document_query",
+	"Audit Log": "litwatch.scope.audit_log_query",
+	"GST User": "litwatch.scope.gst_user_query",
+	"GST Sync Log": "litwatch.scope.gst_sync_log_query",
+	"GST OTP Request": "litwatch.scope.gst_otp_request_query",
+}
+
+has_permission = {
+	"Business": "litwatch.scope.has_permission",
+	"GSTIN": "litwatch.scope.has_permission",
+	"Notice": "litwatch.scope.has_permission",
+	"Payment": "litwatch.scope.has_permission",
+	"Review Queue Item": "litwatch.scope.has_permission",
+	"Client Document": "litwatch.scope.has_permission",
+	"Audit Log": "litwatch.scope.has_permission",
+	"GST User": "litwatch.scope.has_permission",
+}

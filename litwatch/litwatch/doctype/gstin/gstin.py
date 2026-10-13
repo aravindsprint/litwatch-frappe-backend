@@ -11,6 +11,13 @@ GSTIN_RE = re.compile(r"[0-9]{2}[A-Z0-9]{13}")
 
 
 class GSTIN(Document):
+	def has_permission(self, permtype="read", *, debug=False, user=None):
+		# Per-user scoping (litwatch/scope.py); also applies to Administrator / the shared API key
+		from litwatch.scope import doc_in_scope
+
+		if not doc_in_scope(self):
+			return False
+		return super().has_permission(permtype, debug=debug, user=user)
 	def before_insert(self):
 		# Upper-case before the record is named after it.
 		self.gstin = (self.gstin or "").strip().upper()

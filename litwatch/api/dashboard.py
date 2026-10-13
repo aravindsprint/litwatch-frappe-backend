@@ -21,6 +21,8 @@ from datetime import date, datetime, timedelta
 
 import frappe
 from frappe import _
+
+from litwatch import scope
 from frappe.utils import cint, getdate, nowdate
 
 # ---------------------------------------------------------------------------
@@ -435,11 +437,18 @@ def get_command_hub(client_key=None, gstin=None, months=12, priority_limit=5, as
 
 	filters = [["docstatus", "!=", 2]]  # cancelled notices are left out
 	or_filters = None
+	allowed = scope.get_scope()  # litwatch/scope.py
 	if client_key:
 		business_id = _resolve_business(client_key)
+		scope.check_business(business_id)
 		gstins = frappe.get_all("GSTIN", filters={"business_id": business_id}, pluck="name")
 		or_filters = [["business_id", "=", business_id]] + ([["gstin", "in", gstins]] if gstins else [])
+	elif allowed is not None:
+		# No client chosen: all of the caller's businesses, never anyone else's
+		my_gstins = scope.scope_gstins(allowed)
+		or_filters = [["business_id", "in", allowed or ["__none__"]]] + ([["gstin", "in", my_gstins]] if my_gstins else [])
 	if gstin:
+		scope.check_gstin(gstin)
 		filters.append(["gstin", "=", str(gstin).strip().upper()])
 
 	rows = frappe.get_all("Notice", filters=filters, or_filters=or_filters, fields=fields,

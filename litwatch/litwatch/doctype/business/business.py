@@ -7,6 +7,13 @@ from frappe.model.document import Document
 
 
 class Business(Document):
+	def has_permission(self, permtype="read", *, debug=False, user=None):
+		# Per-user scoping (litwatch/scope.py); also applies to Administrator / the shared API key
+		from litwatch.scope import doc_in_scope
+
+		if not doc_in_scope(self):
+			return False
+		return super().has_permission(permtype, debug=debug, user=user)
 	def validate(self):
 		seen = set()
 		rows = []
@@ -20,6 +27,12 @@ class Business(Document):
 			rows.append(row)
 		if len(rows) != len(self.get("gstins") or []):
 			self.set("gstins", rows)
+
+	def after_insert(self):
+		# A client (or the frontend acting for one) creating a business keeps seeing it.
+		from litwatch.scope import link_business_to_scope_user
+
+		link_business_to_scope_user(self.name)
 
 	def on_update(self):
 		# Keep GSTIN.business_id in step with this table (skip when GSTIN is the one syncing us).

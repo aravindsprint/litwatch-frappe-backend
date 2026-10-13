@@ -13,6 +13,8 @@ Contains secrets: only System Manager may call it, and every call is logged.
 
 import frappe
 from frappe import _
+
+from litwatch import scope
 from frappe.utils import get_datetime, now_datetime
 
 # GST state codes (first two digits of a GSTIN)
@@ -66,6 +68,7 @@ def get_gstin_gsp_details(gstin=None):
 		frappe.throw(_("gstin is required"))
 	if not frappe.db.exists("GSTIN", gstin):
 		frappe.throw(_("GSTIN {0} not found").format(gstin), frappe.DoesNotExistError)
+	scope.check_gstin(gstin)  # with gstUser: only that GST User's GSTINs
 
 	reg = frappe.db.get_value(
 		"GSTIN", gstin,

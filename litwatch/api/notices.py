@@ -13,6 +13,8 @@ import json
 
 import frappe
 from frappe import _
+
+from litwatch import scope
 from frappe.utils import cint, getdate
 
 # Shown in the list view; everything else comes with full=1
@@ -103,6 +105,7 @@ def get_client_notices(
 		frappe.throw(_("Not permitted to read notices"), frappe.PermissionError)
 
 	business_id = _resolve_business(client_key)
+	scope.check_business(business_id)  # only the caller's own businesses (litwatch/scope.py)
 	meta = frappe.get_meta("Notice")
 	has = lambda f: bool(meta.get_field(f)) or f in ("name", "docstatus", "creation", "modified")
 

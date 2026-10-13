@@ -9,6 +9,7 @@ import frappe
 from frappe import _
 from frappe.utils import add_months, add_to_date, get_datetime, getdate, now_datetime, nowdate
 
+from litwatch import scope
 from litwatch.api import gst_portal
 
 VALID_CONSENT = ("inactive", "pending", "active", "expired")
@@ -49,6 +50,7 @@ def _get_registration(gstin, ptype="write"):
 		frappe.throw(_("gstin is required"))
 	if not frappe.db.exists("GSTIN", gstin):
 		frappe.throw(_("GSTIN {0} not found. Add it to a Business first.").format(gstin), frappe.DoesNotExistError)
+	scope.check_gstin(gstin)  # only GSTINs of the caller's own businesses
 	reg = frappe.get_doc("GSTIN", gstin)
 	if ptype:
 		reg.check_permission(ptype)
@@ -103,9 +105,13 @@ def _new_otp_request(gstin, otp_sent_to, status="pending"):
 # ---------------------------------------------------------------------------
 @frappe.whitelist(methods=["GET"])
 def get_gstin_connections():
-	"""Every GSTIN (GSTIN doctype) with its business, consent and notice count."""
+	"""Every GSTIN the caller may see (litwatch/scope.py) with its business, consent and notice count."""
+	allowed = scope.get_scope()
+	if allowed is not None and not allowed:
+		return []
 	gstins = frappe.get_all(
 		"GSTIN",
+		filters={"business_id": ["in", allowed]} if allowed is not None else None,
 		fields=["name", "city", "state", "business_id", "consent_status", "valid_until", "last_checked"],
 		order_by="modified desc",
 		limit_page_length=0,
@@ -500,11 +506,14 @@ def _mark_run_progress(run_id):
 # ---------------------------------------------------------------------------
 @frappe.whitelist(methods=["POST"])
 def run_all_gstin_sync():
+	# Only the caller's GSTINs (litwatch/scope.py); unscoped staff calls still sync every GSTIN.
+	filters = {"consent_status": "active"}
+	allowed = scope.get_scope()
+	if allowed is not None:
+		filters["business_id"] = ["in", allowed or ["__none__"]]
 	gstins = [
 		g
-		for g in frappe.get_all(
-			"GSTIN", filters={"consent_status": "active"}, pluck="name", limit_page_length=0
-		)
+		for g in frappe.get_all("GSTIN", filters=filters, pluck="name", limit_page_length=0)
 		if frappe.has_permission("GSTIN", "write", g)
 	]
 
@@ -553,15 +562,21 @@ def get_sync_usage():
 
 	week_start = frappe.utils.add_days(today_d, -today_d.weekday())
 	week_end = frappe.utils.add_days(week_start, 6)
-	notices_this_week = frappe.db.count(
-		"Notice",
-		filters={
-			"portal_ref_id": ["is", "set"],
-			"creation": ["between", [f"{week_start} 00:00:00", f"{week_end} 23:59:59"]],
-		},
-	)
+	# Notice and skipped-run counts follow the caller's scope; the portal call cap,
+	# token and per-endpoint calls are firm-wide (one GSP account) and stay global.
+	allowed = scope.get_scope()
+	my_gstins = scope.scope_gstins(allowed) if allowed is not None else None
+	notice_filters = {
+		"portal_ref_id": ["is", "set"],
+		"creation": ["between", [f"{week_start} 00:00:00", f"{week_end} 23:59:59"]],
+	}
+	log_filters = {"status": "skipped"}
+	if my_gstins is not None:
+		notice_filters["gstin"] = ["in", my_gstins or ["__none__"]]
+		log_filters["gstin"] = ["in", my_gstins or ["__none__"]]
+	notices_this_week = frappe.db.count("Notice", filters=notice_filters)
 
-	skipped_runs = frappe.db.count("GST Sync Log", filters={"status": "skipped"})
+	skipped_runs = frappe.db.count("GST Sync Log", filters=log_filters)
 
 	by_endpoint = frappe.db.sql(
 		"""
@@ -594,7 +609,12 @@ def get_sync_log(gstin=None):
 	if gstin:
 		if not frappe.db.exists("GSTIN", gstin):
 			frappe.throw(_("GSTIN {0} not found").format(gstin), frappe.DoesNotExistError)
+		scope.check_gstin(gstin)
 		filters["gstin"] = gstin
+	else:
+		allowed = scope.get_scope()
+		if allowed is not None:
+			filters["gstin"] = ["in", scope.scope_gstins(allowed) or ["__none__"]]
 
 	rows = frappe.get_all(
 		"GST Sync Log",

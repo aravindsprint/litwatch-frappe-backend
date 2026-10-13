@@ -10,6 +10,7 @@ import frappe
 from frappe import _
 from frappe.utils import add_months, get_first_day, get_last_day, getdate, nowdate
 
+from litwatch import scope
 from litwatch.api.business import new_business, onboarding_stages
 
 
@@ -36,60 +37,32 @@ def _pick(sources, *keys):
 
 
 def _resolve_business(key):
-	"""Business ID from a key; also accepts a short name (e.g. old client codes like 'GT')."""
+	"""Business ID from a key; also accepts a short name (e.g. old client codes like 'GT').
+	The Business must be one the caller may see (litwatch/scope.py)."""
 	key = str(key).strip()
+	business_id = None
 	if frappe.db.exists("Business", key):
-		return key
-	alt = frappe.db.get_value("Business", {"short_name": key.upper()}, "name")
-	if alt:
-		return str(alt)
-	frappe.throw(_("Client {0} not found").format(key), frappe.DoesNotExistError)
+		business_id = key
+	else:
+		alt = frappe.db.get_value("Business", {"short_name": key.upper()}, "name")
+		if alt:
+			business_id = str(alt)
+	if not business_id:
+		frappe.throw(_("Client {0} not found").format(key), frappe.DoesNotExistError)
+	scope.check_business(business_id)
+	return business_id
 
 
 # ---------------------------------------------------------------------------
 # GET litwatch.api.clients.get_clients
 # ---------------------------------------------------------------------------
-def _allowed_business_ids(gst_user=None):
-	"""Business IDs the caller may see, or None for "all".
-
-	- gst_user given: that GST User's businesses (System Manager only, unless it is
-	  the caller's own GST User).
-	- otherwise the caller's own GST User (GST User is named by the User's email):
-	  only the businesses in its Business ID table.
-	- a System Manager without a GST User record: all businesses (firm staff).
-	- anyone else without a GST User record: none.
-	"""
-	user = frappe.session.user
-	is_admin = "System Manager" in frappe.get_roles(user)
-	if gst_user:
-		gst_user = str(gst_user).strip()
-		if not frappe.db.exists("GST User", gst_user):
-			frappe.throw(_("GST User {0} not found").format(gst_user), frappe.DoesNotExistError)
-		if not is_admin and gst_user.lower() != user.lower():
-			frappe.throw(_("Not permitted to view another GST User's businesses"), frappe.PermissionError)
-	elif frappe.db.exists("GST User", user):
-		gst_user = user
-	elif is_admin:
-		return None
-	else:
-		return []
-
-	return [
-		str(b) for b in frappe.get_all(
-			"GST User Business",
-			filters={"parenttype": "GST User", "parent": gst_user},
-			pluck="business",
-			order_by="idx asc",
-		) if b
-	]
-
-
 @frappe.whitelist(methods=["GET"])
 def get_clients(gstUser=None):
 	"""
 	Client roster with summary metrics: only the Businesses that belong to the
-	GST User (see _allowed_business_ids). Optional query param gstUser=<email>
-	(System Manager only) returns that GST User's businesses.
+	GST User (see litwatch/scope.py). The GST User comes from the logged-in user,
+	or, for System Manager / the shared API key, from gstUser=<email> or the
+	X-LitWatch-GST-User header.
 
 	  [{ "key": "1", "name": "...", "shortName": "...", "pan": "...", "sector": "...",
 	     "notices": 2, "demand": 0, "overdue": 0,
@@ -100,8 +73,7 @@ def get_clients(gstUser=None):
 	the month the notice was imported). demand, overdue and resolvedData are 0:
 	Notice has no structured demand, due-date or resolved fields yet.
 	"""
-	gstUser = gstUser or _pick(_request_params(), "gstUser", "gst_user")
-	allowed = _allowed_business_ids(gstUser)
+	allowed = scope.get_scope()  # gstUser / X-LitWatch-GST-User, see litwatch/scope.py
 	if allowed is not None and not allowed:
 		return []
 
@@ -218,6 +190,8 @@ def get_active_client():
 	client_key = frappe.defaults.get_user_default("active_client") or None
 	if client_key and not frappe.db.exists("Business", client_key):
 		client_key = None  # stale value (e.g. an old Client code)
+	if client_key and not scope.business_allowed(client_key):
+		client_key = None  # not one of this GST User's businesses
 
 	frappe.local.response.update({"clientKey": client_key})
 	frappe.local.response.http_status_code = 200
@@ -230,9 +204,17 @@ def get_active_client():
 @frappe.whitelist(methods=["GET"])
 def get_client_pipeline():
 	"""Businesses still onboarding (stage not Complete), sorted by stage then date."""
+	filters = {"onboarding_stage": ["!=", "Complete"]}
+	allowed = scope.get_scope()
+	if allowed is not None:
+		if not allowed:
+			frappe.local.response.update({"data": []})
+			frappe.local.response.http_status_code = 200
+			return
+		filters["name"] = ["in", allowed]
 	businesses = frappe.get_all(
 		"Business",
-		filters={"onboarding_stage": ["!=", "Complete"]},
+		filters=filters,
 		fields=["name", "business_name", "sector", "onboarding_stage", "onboarding_date"],
 		limit_page_length=0,
 	)

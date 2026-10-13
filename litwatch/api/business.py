@@ -10,6 +10,8 @@ import re
 import frappe
 from frappe import _
 
+from litwatch import scope
+
 GSTIN_RE = re.compile(r"[0-9]{2}[A-Z0-9]{13}")
 
 
@@ -159,6 +161,7 @@ def add_gstin(businessId=None, gstin=None, address=None, portalUserId=None):
 
 	if not businessId or not frappe.db.exists("Business", businessId):
 		frappe.throw(_("Business {0} not found").format(businessId or ""), frappe.DoesNotExistError)
+	scope.check_business(businessId)  # only the caller's own businesses
 
 	business = frappe.get_doc("Business", businessId)
 	business.check_permission("write")
@@ -172,12 +175,22 @@ def add_gstin(businessId=None, gstin=None, address=None, portalUserId=None):
 # ---------------------------------------------------------------------------
 @frappe.whitelist(methods=["GET"])
 def get_businesses():
-	"""Every Business with its GSTINs and their consent status."""
+	"""Every Business the caller may see (litwatch/scope.py) with its GSTINs and their consent status."""
+	allowed = scope.get_scope()
+	if allowed is not None and not allowed:
+		return []
 	businesses = frappe.get_all(
-		"Business", fields=["name", "business_name", "pan", "sector", "status"], order_by="name asc", limit_page_length=0
+		"Business",
+		filters={"name": ["in", allowed]} if allowed is not None else None,
+		fields=["name", "business_name", "pan", "sector", "status"],
+		order_by="name asc",
+		limit_page_length=0,
 	)
 	gstins = frappe.get_all(
-		"GSTIN", fields=["name", "business_id", "state", "consent_status"], limit_page_length=0
+		"GSTIN",
+		filters={"business_id": ["in", allowed]} if allowed is not None else None,
+		fields=["name", "business_id", "state", "consent_status"],
+		limit_page_length=0,
 	)
 	by_business = {}
 	for g in gstins:
