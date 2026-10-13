@@ -29,9 +29,9 @@ class TestUserScoping(FrappeTestCase):
 		cls.biz_b = frappe.get_doc({"doctype": "Business", "business_name": "Scope Test B"}).insert(ignore_permissions=True).name
 		for gstin, biz in ((GSTIN_A, cls.biz_a), (GSTIN_B, cls.biz_b)):
 			frappe.get_doc({"doctype": "GSTIN", "gstin": gstin, "business_id": str(biz), "consent_status": "active"}).insert(ignore_permissions=True)
-		cls.notice_a = frappe.get_doc({"doctype": "Notice", "business_id": str(cls.biz_a)}).insert(ignore_permissions=True).name
-		cls.notice_b = frappe.get_doc({"doctype": "Notice", "business_id": str(cls.biz_b)}).insert(ignore_permissions=True).name
-		cls.notice_gstin_a = frappe.get_doc({"doctype": "Notice", "gstin": GSTIN_A}).insert(ignore_permissions=True).name
+		cls.notice_a = frappe.get_doc({"doctype": "Notice", "client_id": "Administrator", "business_id": str(cls.biz_a)}).insert(ignore_permissions=True).name
+		cls.notice_b = frappe.get_doc({"doctype": "Notice", "client_id": "Administrator", "business_id": str(cls.biz_b)}).insert(ignore_permissions=True).name
+		cls.notice_gstin_a = frappe.get_doc({"doctype": "Notice", "client_id": "Administrator", "gstin": GSTIN_A}).insert(ignore_permissions=True).name
 		if not frappe.db.exists("User", CLIENT_EMAIL):
 			frappe.get_doc({"doctype": "User", "email": CLIENT_EMAIL, "first_name": "Scope Client",
 			                "user_type": "Website User", "send_welcome_email": 0}).insert(ignore_permissions=True)
@@ -71,7 +71,7 @@ class TestUserScoping(FrappeTestCase):
 		with self.assertRaises(frappe.PermissionError):
 			frappe.get_doc("Notice", self.notice_b).check_permission("read")
 		with self.assertRaises(frappe.PermissionError):
-			frappe.get_doc({"doctype": "Notice", "business_id": str(self.biz_b)}).insert()
+			frappe.get_doc({"doctype": "Notice", "client_id": "Administrator", "business_id": str(self.biz_b)}).insert()
 
 	# --- custom methods --------------------------------------------------
 	def test_custom_methods(self):
