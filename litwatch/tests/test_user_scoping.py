@@ -16,7 +16,7 @@ def as_gst_user(email=None):
 	"""Act like the frontend: shared key (Administrator) + gstUser."""
 	frappe.set_user("Administrator")
 	frappe.local.form_dict = frappe._dict({"gstUser": email} if email else {})
-	frappe.local.__dict__.pop(scope._CACHE, None)
+	scope.reset_cache()
 
 
 class TestUserScoping(FrappeTestCase):

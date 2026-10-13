@@ -35,6 +35,19 @@ STAFF_ROLE = "System Manager"
 _CACHE = "litwatch_scope_cache"
 
 
+def _cache():
+	"""Per-request cache. frappe.local is a werkzeug Local, so only get/setattr work on it."""
+	cache = getattr(frappe.local, _CACHE, None)
+	if cache is None:
+		cache = {}
+		setattr(frappe.local, _CACHE, cache)
+	return cache
+
+
+def reset_cache():
+	setattr(frappe.local, _CACHE, {})
+
+
 # ---------------------------------------------------------------------------
 # Who / what
 # ---------------------------------------------------------------------------
@@ -85,7 +98,7 @@ def _businesses_of(gst_user):
 
 def get_scope():
 	"""None = everything; otherwise the list of Business IDs the request may see."""
-	cache = frappe.local.__dict__.setdefault(_CACHE, {})
+	cache = _cache()
 	user = frappe.session.user if getattr(frappe.local, "session", None) else "Guest"
 	key = (user, requested_gst_user())
 	if key in cache:
@@ -109,7 +122,7 @@ def get_scope():
 
 def add_to_scope(business_id):
 	"""Make a just-created Business visible for the rest of this request."""
-	cache = frappe.local.__dict__.get(_CACHE) or {}
+	cache = getattr(frappe.local, _CACHE, None) or {}
 	for scope in cache.values():
 		if scope is not None and str(business_id) not in scope:
 			scope.append(str(business_id))
