@@ -80,7 +80,7 @@ def get_clients(gstUser=None):
 	businesses = frappe.get_all(
 		"Business",
 		filters={"name": ["in", allowed]} if allowed is not None else None,
-		fields=["name", "business_name", "short_name", "pan", "sector"],
+		fields=["name", "business_name", "short_name", "pan", "sector", "approval_status"],
 		order_by="name asc",
 		limit_page_length=0,
 	)
@@ -126,6 +126,7 @@ def get_clients(gstUser=None):
 				"shortName": b.short_name,
 				"pan": b.pan,
 				"sector": b.sector,
+				"approval": b.approval_status or "Approved",
 				"notices": counts.get(key, 0),
 				"demand": 0,
 				"overdue": 0,

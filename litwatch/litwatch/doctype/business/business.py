@@ -14,7 +14,18 @@ class Business(Document):
 		if not doc_in_scope(self):
 			return False
 		return super().has_permission(permtype, debug=debug, user=user)
+	def before_insert(self):
+		# Require business approval (Sync Settings): a business created by a GST User waits as Pending.
+		if self.flags.keep_approval_status:
+			return
+		from litwatch import scope, settings
+
+		pending = settings.flag("require_business_approval") and scope.get_scope() is not None
+		self.approval_status = "Pending" if pending else "Approved"
+
 	def validate(self):
+		if self.approval_status not in ("Approved", "Pending", "Rejected"):
+			self.approval_status = "Approved"
 		seen = set()
 		rows = []
 		for row in self.get("gstins") or []:
@@ -35,6 +46,11 @@ class Business(Document):
 		link_business_to_scope_user(self.name)
 
 	def on_update(self):
+		from litwatch import gstin_status
+
+		if self.get_doc_before_save() and self.has_value_changed("approval_status"):
+			# Approved: its GSTINs can become ready; Pending / Rejected: back to inactive.
+			gstin_status.refresh_business_gstins(self.name)
 		# Keep GSTIN.business_id in step with this table (skip when GSTIN is the one syncing us).
 		if self.flags.from_gstin_sync:
 			return
@@ -45,9 +61,11 @@ class Business(Document):
 		for gstin in new:
 			if str(frappe.db.get_value("GSTIN", gstin, "business_id") or "") != me:
 				frappe.db.set_value("GSTIN", gstin, "business_id", me)
+				gstin_status.sync_auto_status(gstin)
 		for gstin in old - new:
 			if str(frappe.db.get_value("GSTIN", gstin, "business_id") or "") == me:
 				frappe.db.set_value("GSTIN", gstin, "business_id", None)
+				gstin_status.sync_auto_status(gstin)
 
 	def on_trash(self):
 		me = str(self.name)

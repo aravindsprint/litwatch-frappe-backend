@@ -144,7 +144,13 @@ def create_business(name=None, pan=None, sector=None, firstGstin=None, address=N
 
 	frappe.db.commit()
 	frappe.local.response.http_status_code = 201
-	return {"businessId": str(business.name), "name": business.business_name, "notices": 0, "gstins": gstins}
+	return {
+		"businessId": str(business.name),
+		"name": business.business_name,
+		"approval": business.approval_status or "Approved",
+		"notices": 0,
+		"gstins": gstins,
+	}
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +211,7 @@ def get_businesses():
 	businesses = frappe.get_all(
 		"Business",
 		filters={"name": ["in", allowed]} if allowed is not None else None,
-		fields=["name", "business_name", "pan", "sector", "status"],
+		fields=["name", "business_name", "pan", "sector", "status", "approval_status", "approval_note"],
 		order_by="name asc",
 		limit_page_length=0,
 	)
@@ -241,6 +247,8 @@ def get_businesses():
 			"pan": b.pan,
 			"sector": b.sector,
 			"status": b.status,
+			"approval": b.approval_status or "Approved",
+			"approvalNote": b.approval_note or None,
 			"gstins": by_business.get(str(b.name), []),
 			"notices": notice_counts.get(str(b.name), 0),
 		}

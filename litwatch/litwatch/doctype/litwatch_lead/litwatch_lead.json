@@ -1,0 +1,181 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 0,
+ "autoname": "LEAD-.#####",
+ "creation": "2026-10-14 19:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "first_name",
+  "last_name",
+  "full_name",
+  "email",
+  "whatsapp_number",
+  "column_break_1",
+  "practice_type",
+  "firm_name",
+  "client_count",
+  "crm_section",
+  "status",
+  "source",
+  "collected_on",
+  "column_break_2",
+  "user",
+  "converted_on",
+  "invite",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "first_name",
+   "fieldtype": "Data",
+   "label": "First Name",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "last_name",
+   "fieldtype": "Data",
+   "label": "Last Name"
+  },
+  {
+   "fieldname": "full_name",
+   "fieldtype": "Data",
+   "label": "Full Name",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "label": "Email ID",
+   "options": "Email",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Needed to convert the lead to a User."
+  },
+  {
+   "fieldname": "whatsapp_number",
+   "fieldtype": "Data",
+   "label": "WhatsApp Number",
+   "options": "Phone"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "practice_type",
+   "fieldtype": "Select",
+   "label": "Individual CA or Firm",
+   "options": "\nIndividual CA\nFirm"
+  },
+  {
+   "fieldname": "firm_name",
+   "fieldtype": "Data",
+   "label": "Firm Name",
+   "depends_on": "eval:doc.practice_type=='Firm'"
+  },
+  {
+   "fieldname": "client_count",
+   "fieldtype": "Int",
+   "label": "How Many Clients"
+  },
+  {
+   "fieldname": "crm_section",
+   "fieldtype": "Section Break",
+   "label": "Lead"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "New\nHold\nRejected\nOnboard",
+   "default": "New",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Onboard is set automatically when the lead is converted to a User."
+  },
+  {
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "litwatch.in lead form\nExcel import\nRegistration link\nCreated by team\nOther",
+   "default": "litwatch.in lead form",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "collected_on",
+   "fieldtype": "Date",
+   "label": "Collected On",
+   "default": "Today",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "label": "User",
+   "options": "User",
+   "read_only": 1,
+   "description": "The User this lead was converted to. The lead is kept after conversion."
+  },
+  {
+   "fieldname": "converted_on",
+   "fieldtype": "Datetime",
+   "label": "Converted On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "invite",
+   "fieldtype": "Link",
+   "label": "Registration Invite",
+   "options": "Registration Invite",
+   "read_only": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-14 19:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Litwatch",
+ "name": "LitWatch Lead",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "import": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "title_field": "full_name",
+ "show_title_field_in_link": 1,
+ "search_fields": "full_name"
+}

@@ -38,29 +38,32 @@ class AdaequareSettings(Document):
 		)
 
 	def on_update(self):
-		"""Check the credentials, then move the Business's GSTINs inactive -> ready (or back)."""
-		from litwatch.gstin_status import move_business_gstins
+		"""Check the credentials, then move the Business's GSTINs inactive -> ready (or back).
+		GSTINs of a business that is not approved stay inactive (litwatch/gstin_status.py)."""
+		from litwatch.gstin_status import business_configured, refresh_business_gstins
 
 		if self.flags.credentials_changed:
 			self._clear_token()
 		ok, error = self._verify_credentials()
 		self.db_set("credentials_verified", 1 if ok else 0, update_modified=False)
 
-		if ok:
-			moved = move_business_gstins(self.business, "inactive", "ready")
-			if moved:
-				frappe.msgprint(
-					_("{0} GSTIN(s) of this business are now Ready to connect: {1}").format(len(moved), ", ".join(moved)),
-					indicator="green",
-				)
-		else:
-			moved = move_business_gstins(self.business, "ready", "inactive")
-			if error:
-				frappe.msgprint(
-					_("The GSP credentials did not work, so the GSTINs stay Not set up: {0}").format(error),
-					title=_("Credentials not verified"),
-					indicator="orange",
-				)
+		moved = refresh_business_gstins(self.business)
+		if ok and moved and business_configured(self.business):
+			frappe.msgprint(
+				_("{0} GSTIN(s) of this business are now Ready to connect: {1}").format(len(moved), ", ".join(moved)),
+				indicator="green",
+			)
+		elif ok and frappe.db.get_value("Business", self.business, "approval_status") in ("Pending", "Rejected"):
+			frappe.msgprint(
+				_("Credentials verified. The business is not approved yet, so its GSTINs stay Not set up until it is."),
+				indicator="orange",
+			)
+		elif error:
+			frappe.msgprint(
+				_("The GSP credentials did not work, so the GSTINs stay Not set up: {0}").format(error),
+				title=_("Credentials not verified"),
+				indicator="orange",
+			)
 
 	def on_trash(self):
 		from litwatch.gstin_status import move_business_gstins

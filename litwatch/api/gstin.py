@@ -76,10 +76,17 @@ def _save_portal_otp(reg, otp=None):
 
 
 def _mark_verifying(reg, otp=None):
-	"""OTP verified (or no OTP needed): wait for approval in Frappe.
+	"""OTP verified (or no OTP needed). With "Require GSTIN approval" on (Sync Settings) the GSTIN
+	waits as verifying for approval in Frappe; with it off it is active for 12 months straight away.
 	A GSTIN that is already active stays active (its connection was approved before)."""
+	from litwatch import settings
+
 	if reg.consent_status != "active":
-		reg.consent_status = "verifying"
+		if settings.flag("require_gstin_approval"):
+			reg.consent_status = "verifying"
+		else:
+			reg.consent_status = "active"
+			reg.valid_until = add_months(nowdate(), 12)
 		reg.rejection_reason = None
 	reg.last_checked = now_datetime()
 	_save_portal_otp(reg, otp)
@@ -102,6 +109,14 @@ def _check_can_connect(reg):
 			_("GSTIN {0} is not set up yet: its Business has no active, verified Adaequare Settings (GSP app). "
 			  "Add them in Frappe first.").format(reg.name),
 			title=_("Not set up"),
+		)
+	approval = frappe.db.get_value("Business", reg.business_id, "approval_status") if reg.business_id else None
+	if approval in ("Pending", "Rejected"):
+		frappe.throw(
+			_("Business {0} is {1}: its GSTINs can connect once the business is approved.").format(
+				reg.business_id, _("waiting for approval") if approval == "Pending" else _("rejected")
+			),
+			title=_("Business not approved"),
 		)
 	if status == "verifying":
 		frappe.throw(
@@ -308,11 +323,9 @@ def resend_gstin_otp(gstin=None):
 # 3.4b Approve / reject a verified connection (firm staff, in Frappe)
 # ---------------------------------------------------------------------------
 def _check_approver():
-	if "System Manager" not in frappe.get_roles():
-		frappe.throw(_("Only System Manager can approve or reject GSTIN connections"), frappe.PermissionError)
-	if scope.get_scope() is not None:
-		# The frontend's shared key acting for a GST User must not approve its own connection.
-		frappe.throw(_("GSTIN connections are approved by firm staff, not by a GST User"), frappe.PermissionError)
+	from litwatch.api.approvals import check_approver
+
+	check_approver()
 
 
 @frappe.whitelist(methods=["POST"])
@@ -440,6 +453,7 @@ def _import_portal_notice(reg, otp, item):
 			"portal_metadata": json.dumps(metadata),
 		}
 	)
+	notice.flags.from_sync = True  # one summary notification per sync instead of one per notice
 	notice.insert(ignore_permissions=True)
 
 	documents = []
@@ -487,6 +501,19 @@ def _sync_one(reg, sync_run=None):
 		reg.db_set({"consent_status": "expired", "portal_otp": None}, update_modified=False)
 		remove_encrypted_password("GSTIN", reg.name, "portal_otp")
 		gst_portal.store_otp(reg.name, None)
+		from litwatch.notifications import business_name, gstin_recipients, notify
+
+		notify(
+			gstin_recipients(reg.name, reg.business_id),
+			_("Reconnect {0}").format(reg.name),
+			_("The GST portal session of {0} ({1}) has ended. Connect it again with a new OTP to keep syncing notices.").format(
+				reg.name, business_name(reg.business_id)
+			),
+			kind="sync",
+			client=str(reg.business_id) if reg.business_id else None,
+			reference_doctype="GSTIN",
+			reference_name=reg.name,
+		)
 		frappe.db.commit()
 		raise gst_portal.PortalError(
 			_("GST portal session for {0} has expired. Reconnect the GSTIN with a new OTP.").format(reg.name)
@@ -514,6 +541,21 @@ def _sync_one(reg, sync_run=None):
 	status = "failed" if errors else "ok"
 	reg.db_set("last_checked", now_datetime(), update_modified=False)
 	_write_sync_log(reg.name, seen, found, status, sync_run=sync_run, error="\n".join(errors)[:1000] or None)
+	if found:
+		from litwatch.notifications import business_name, gstin_recipients, notify
+
+		business_id = str(reg.business_id) if reg.business_id else None
+		notify(
+			gstin_recipients(reg.name, business_id),
+			_("{0} new notice(s) for {1}").format(found, reg.name),
+			_("A sync of {0} ({1}) found {2} new notice(s) on the GST portal.").format(
+				reg.name, business_name(business_id), found
+			),
+			kind="sync",
+			client=business_id,
+			reference_doctype="GSTIN",
+			reference_name=reg.name,
+		)
 	return {"seen": seen, "found": found, "status": status}
 
 

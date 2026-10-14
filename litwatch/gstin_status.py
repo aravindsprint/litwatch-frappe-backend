@@ -6,7 +6,7 @@ GSTIN connection status (GSTIN.consent_status) and its notifications.
                   ^                     |
                   +---- rejected -------+
 
-- inactive : the Business has no working GSP app (Adaequare Settings).
+- inactive : the Business has no working GSP app (Adaequare Settings), or is not approved.
 - ready    : Adaequare Settings saved, active, and its credentials got a GSP token.
 - pending  : OTP sent (connect_gstin), not entered yet.
 - verifying: OTP verified, waiting for approval in Frappe.
@@ -33,10 +33,19 @@ def business_configured(business_id, exclude_settings=None):
 	name = str(business_id)
 	if exclude_settings and name == str(exclude_settings):
 		return False
+	if frappe.db.get_value("Business", name, "approval_status") in ("Pending", "Rejected"):
+		return False  # GSTINs of a business waiting for (or refused) approval can't connect
 	row = frappe.db.get_value(
 		"Adaequare Settings", name, ["is_active", "client_id", "credentials_verified"], as_dict=True
 	)
 	return bool(row and row.is_active and row.client_id and row.credentials_verified)
+
+
+def refresh_business_gstins(business_id):
+	"""inactive <-> ready for every GSTIN of the Business, after its approval or settings change."""
+	if business_id and business_configured(business_id):
+		return move_business_gstins(business_id, "inactive", "ready")
+	return move_business_gstins(business_id, "ready", "inactive")
 
 
 def auto_status(doc):
@@ -47,6 +56,18 @@ def auto_status(doc):
 	if current not in AUTO:
 		return
 	doc.consent_status = "ready" if business_configured(doc.business_id) else "inactive"
+
+
+def sync_auto_status(gstin):
+	"""After business_id was changed directly in the database: recompute inactive/ready (saves, so it notifies)."""
+	doc = frappe.get_doc("GSTIN", gstin)
+	if (doc.consent_status or "inactive") not in AUTO:
+		return
+	want = "ready" if business_configured(doc.business_id) else "inactive"
+	if want != (doc.consent_status or "inactive"):
+		doc.consent_status = want
+		doc.flags.ignore_auto_status = True
+		doc.save(ignore_permissions=True)
 
 
 def move_business_gstins(business_id, from_status, to_status):
@@ -79,6 +100,7 @@ def notify_status_change(doc):
 		frappe.db.get_value("Business", business_id, "business_name") if business_id else None
 	) or business_id or "-"
 	ref = {"client": business_id, "reference_doctype": "GSTIN", "reference_name": doc.name}
+	approval = {"kind": "approval", **ref}
 
 	if new == "ready" and old == "verifying":
 		reason = doc.rejection_reason or _("No reason given")
@@ -88,7 +110,7 @@ def notify_status_change(doc):
 			_("The connection of {0} ({1}) was rejected. Reason: {2}. Connect it again with a new GST portal OTP.").format(
 				doc.name, business_name, reason
 			),
-			**ref,
+			**approval,
 		)
 	elif new == "ready":
 		notify(
@@ -104,14 +126,25 @@ def notify_status_change(doc):
 			_("{0} ({1}) verified the GST portal OTP. Approve or reject the connection in Frappe (GSTIN {0}).").format(
 				doc.name, business_name
 			),
-			**ref,
+			**approval,
 		)
-	elif new == "active" and old == "verifying":
+	elif new == "active" and old not in (None, "active"):
+		# approved in Frappe (old = verifying), or verified with GSTIN approval switched off
 		notify(
 			gstin_recipients(doc.name, business_id),
 			_("{0} connected").format(doc.name),
 			_("{0} ({1}) is connected to the GST portal. Notices will sync until {2}.").format(
 				doc.name, business_name, doc.valid_until or "-"
 			),
-			**ref,
+			**(approval if old == "verifying" else ref),
+		)
+	elif new == "expired" and old == "active":
+		notify(
+			gstin_recipients(doc.name, business_id),
+			_("{0} consent expired").format(doc.name),
+			_("The GST portal connection of {0} ({1}) has lapsed. Connect it again with a new OTP to keep syncing notices.").format(
+				doc.name, business_name
+			),
+			kind="sync",
+			client=business_id, reference_doctype="GSTIN", reference_name=doc.name,
 		)

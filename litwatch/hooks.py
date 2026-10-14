@@ -284,3 +284,39 @@ has_permission = {
 	"GST User": "litwatch.scope.has_permission",
 	"Adaequare Settings": "litwatch.scope.has_permission",
 }
+
+# ---------------------------------------------------------------------------
+# App Notifications (litwatch/notification_events.py, litwatch/notification_jobs.py)
+# ---------------------------------------------------------------------------
+doc_events = {
+	"Notice": {
+		"after_insert": "litwatch.notification_events.notice_after_insert",
+		"on_update": "litwatch.notification_events.notice_on_update",
+	},
+	"Review Queue Item": {"on_update": "litwatch.notification_events.review_item_on_update"},
+	"Payment": {"after_insert": "litwatch.notification_events.payment_after_insert"},
+	"Client Document": {
+		"after_insert": "litwatch.notification_events.client_document_after_insert",
+		"on_update": "litwatch.notification_events.client_document_on_update",
+	},
+	"Business": {
+		"after_insert": "litwatch.notification_events.business_after_insert",
+		"on_update": "litwatch.notification_events.business_on_update",
+	},
+	"GSTIN": {"on_update": "litwatch.notification_events.gstin_on_update"},
+	"GST User": {
+		"after_insert": "litwatch.notification_events.gst_user_after_insert",
+		"on_update": "litwatch.notification_events.gst_user_on_update",
+	},
+	"Firm Profile": {
+		"on_update": "litwatch.notification_events.firm_profile_on_update",
+		"after_rename": "litwatch.notification_events.firm_profile_after_rename",
+	},
+}
+
+scheduler_events = {
+	"cron": {
+		# 08:30 every day (system time zone): deadlines, consent expiry, morning digest
+		"30 8 * * *": ["litwatch.notification_jobs.run_daily"],
+	},
+}

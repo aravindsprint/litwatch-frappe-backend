@@ -97,17 +97,17 @@ class TestGstinStatus(FrappeTestCase):
 		                           "client_secret": "secret", "is_active": 1}).insert(ignore_permissions=True)
 		self.assertEqual(1, frappe.db.get_value("Adaequare Settings", self.biz, "credentials_verified"))
 		self.assertEqual("ready", self.status(G1))
-		self.assertEqual(["GSTIN ready to connect"], notes(CLIENT, G1))
+		self.assertEqual(1, notes(CLIENT, G1).count("GSTIN ready to connect"))
 
 		# saving again does not notify again
 		settings.reload()
 		settings.save(ignore_permissions=True)
-		self.assertEqual(["GSTIN ready to connect"], notes(CLIENT, G1))
+		self.assertEqual(1, notes(CLIENT, G1).count("GSTIN ready to connect"))
 
 		# 3. a GSTIN added later starts as ready
 		frappe.get_doc({"doctype": "GSTIN", "gstin": G2, "business_id": self.biz}).insert(ignore_permissions=True)
 		self.assertEqual("ready", self.status(G2))
-		self.assertEqual(["GSTIN ready to connect"], notes(CLIENT, G2))
+		self.assertEqual(1, notes(CLIENT, G2).count("GSTIN ready to connect"))
 
 		# 4. OTP sent -> pending; verified -> verifying, approvers told
 		req = connect_gstin(gstin=G1, portalUserId="statususer")

@@ -8,7 +8,18 @@
  "field_order": [
   "daily_call_cap",
   "otp_validity_minutes",
-  "mock_portal"
+  "mock_portal",
+  "approvals_section",
+  "require_business_approval",
+  "require_gstin_approval",
+  "accounts_section",
+  "send_account_email",
+  "app_url",
+  "registration_path",
+  "invite_valid_days",
+  "notifications_section",
+  "default_reminder_days",
+  "consent_expiry_days"
  ],
  "fields": [
   {
@@ -30,13 +41,81 @@
    "label": "Mock GST Portal",
    "default": "0",
    "description": "Testing only. Uses the sample data from the Adaequare collection instead of the real portal: OTP 123456 is accepted and sync imports 3 sample notices with a small PDF each. Never enable in production."
+  },
+  {
+   "fieldname": "approvals_section",
+   "fieldtype": "Section Break",
+   "label": "Approvals"
+  },
+  {
+   "fieldname": "require_business_approval",
+   "fieldtype": "Check",
+   "label": "Require business approval",
+   "default": "0",
+   "description": "On: a business created by a GST User (LitWatch app) waits as Pending until approved in Frappe; its GSTINs can't request an OTP until then. Off: new businesses are approved straight away. Pending businesses are not approved automatically when this is turned off."
+  },
+  {
+   "fieldname": "require_gstin_approval",
+   "fieldtype": "Check",
+   "label": "Require GSTIN approval",
+   "default": "1",
+   "description": "On: after the OTP is verified a GSTIN waits as Awaiting verification until approved in Frappe. Off: a verified GSTIN is connected (active) straight away. GSTINs already waiting stay waiting when this is turned off."
+  },
+  {
+   "fieldname": "accounts_section",
+   "fieldtype": "Section Break",
+   "label": "Accounts and registration"
+  },
+  {
+   "fieldname": "send_account_email",
+   "fieldtype": "Check",
+   "label": "Send account email",
+   "default": "1",
+   "description": "When a GST User is created (by the team, from a lead, or by registration), email the acknowledgement with a set-password link."
+  },
+  {
+   "fieldname": "app_url",
+   "fieldtype": "Data",
+   "label": "LitWatch app URL",
+   "description": "Where users sign in, e.g. https://app.litwatch.in. Used in emails and registration links. Empty = this site's URL."
+  },
+  {
+   "fieldname": "registration_path",
+   "fieldtype": "Data",
+   "label": "Registration page path",
+   "default": "/register",
+   "description": "Path of the registration form in the LitWatch app; the link is <app URL><path>?token=..."
+  },
+  {
+   "fieldname": "invite_valid_days",
+   "fieldtype": "Int",
+   "label": "Invite valid for (days)",
+   "default": "14"
+  },
+  {
+   "fieldname": "notifications_section",
+   "fieldtype": "Section Break",
+   "label": "Notifications"
+  },
+  {
+   "fieldname": "default_reminder_days",
+   "fieldtype": "Data",
+   "label": "Default reply reminders (days before due)",
+   "default": "7,3,1",
+   "description": "Used when a user's Notification Setting has no deadline reminders. Comma-separated days."
+  },
+  {
+   "fieldname": "consent_expiry_days",
+   "fieldtype": "Int",
+   "label": "Warn before consent expiry (days)",
+   "default": "30"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-10-01 12:00:00.000000",
+ "modified": "2026-10-14 19:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Sync Settings",

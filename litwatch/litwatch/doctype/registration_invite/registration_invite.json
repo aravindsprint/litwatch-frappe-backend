@@ -1,0 +1,154 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 0,
+ "autoname": "INV-.#####",
+ "creation": "2026-10-14 19:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "invitee_name",
+  "email",
+  "whatsapp_number",
+  "lead",
+  "column_break_1",
+  "status",
+  "expires_on",
+  "sent_via",
+  "sent_on",
+  "link_section",
+  "registration_link",
+  "token",
+  "registered_user",
+  "registered_on"
+ ],
+ "fields": [
+  {
+   "fieldname": "invitee_name",
+   "fieldtype": "Data",
+   "label": "Name",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "label": "Email ID",
+   "options": "Email",
+   "in_list_view": 1,
+   "description": "Pre-filled on the registration form. Needed to send the invite by email."
+  },
+  {
+   "fieldname": "whatsapp_number",
+   "fieldtype": "Data",
+   "label": "WhatsApp Number",
+   "options": "Phone"
+  },
+  {
+   "fieldname": "lead",
+   "fieldtype": "Link",
+   "label": "Lead",
+   "options": "LitWatch Lead"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Active\nUsed\nExpired\nCancelled",
+   "default": "Active",
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "expires_on",
+   "fieldtype": "Datetime",
+   "label": "Expires On",
+   "description": "Empty = Sync Settings > Invite valid for (days) from creation."
+  },
+  {
+   "fieldname": "sent_via",
+   "fieldtype": "Select",
+   "label": "Sent Via",
+   "options": "\nEmail\nWhatsApp\nEmail and WhatsApp",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sent_on",
+   "fieldtype": "Datetime",
+   "label": "Sent On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "link_section",
+   "fieldtype": "Section Break",
+   "label": "Link"
+  },
+  {
+   "fieldname": "registration_link",
+   "fieldtype": "Data",
+   "label": "Registration Link",
+   "read_only": 1,
+   "description": "Send this link to the person (email, or copy it into WhatsApp). It works once, until it expires."
+  },
+  {
+   "fieldname": "token",
+   "fieldtype": "Data",
+   "label": "Token",
+   "read_only": 1,
+   "unique": 1,
+   "hidden": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "registered_user",
+   "fieldtype": "Link",
+   "label": "Registered User",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "registered_on",
+   "fieldtype": "Datetime",
+   "label": "Registered On",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-14 19:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Litwatch",
+ "name": "Registration Invite",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "import": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "title_field": "invitee_name",
+ "show_title_field_in_link": 1,
+ "search_fields": "invitee_name"
+}
