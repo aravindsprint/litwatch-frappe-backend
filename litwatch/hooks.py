@@ -270,6 +270,7 @@ permission_query_conditions = {
 	"GST User": "litwatch.scope.gst_user_query",
 	"GST Sync Log": "litwatch.scope.gst_sync_log_query",
 	"GST OTP Request": "litwatch.scope.gst_otp_request_query",
+	"Adaequare Settings": "litwatch.scope.adaequare_settings_query",
 }
 
 has_permission = {
@@ -281,4 +282,5 @@ has_permission = {
 	"Client Document": "litwatch.scope.has_permission",
 	"Audit Log": "litwatch.scope.has_permission",
 	"GST User": "litwatch.scope.has_permission",
+	"Adaequare Settings": "litwatch.scope.has_permission",
 }

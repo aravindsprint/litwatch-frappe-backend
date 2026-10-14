@@ -19,6 +19,7 @@ def _cleanup():
 	businesses = frappe.get_all("Business", filters={"business_name": ["like", "Scope Test%"]}, pluck="name")
 	businesses = [str(b) for b in businesses]
 	if businesses:
+		frappe.db.delete("Adaequare Settings", {"name": ["in", businesses]})
 		frappe.db.delete("Notice", {"business_id": ["in", businesses]})
 		frappe.db.delete("GST User Business", {"business": ["in", businesses]})
 		frappe.db.delete("Business GSTIN", {"parent": ["in", businesses]})
@@ -54,6 +55,9 @@ class TestUserScoping(FrappeTestCase):
 		cls.notice_a = frappe.get_doc({"doctype": "Notice", "client_id": "Administrator", "business_id": str(cls.biz_a)}).insert(ignore_permissions=True).name
 		cls.notice_b = frappe.get_doc({"doctype": "Notice", "client_id": "Administrator", "business_id": str(cls.biz_b)}).insert(ignore_permissions=True).name
 		cls.notice_gstin_a = frappe.get_doc({"doctype": "Notice", "client_id": "Administrator", "gstin": GSTIN_A}).insert(ignore_permissions=True).name
+		for biz in (cls.biz_a, cls.biz_b):
+			frappe.get_doc({"doctype": "Adaequare Settings", "business": str(biz), "client_id": f"scope-{biz}",
+			                "client_secret": "x", "is_active": 1}).insert(ignore_permissions=True)
 		if not frappe.db.exists("User", CLIENT_EMAIL):
 			frappe.get_doc({"doctype": "User", "email": CLIENT_EMAIL, "first_name": "Scope Client",
 			                "user_type": "Website User", "send_welcome_email": 0}).insert(ignore_permissions=True)
@@ -77,6 +81,7 @@ class TestUserScoping(FrappeTestCase):
 		as_gst_user(None)
 		self.assertIsNone(scope.get_scope())
 		self.assertTrue({str(self.biz_a), str(self.biz_b)} <= self.names("Business"))
+		self.assertTrue({str(self.biz_a), str(self.biz_b)} <= self.names("Adaequare Settings"))
 
 	# --- lists (Resource API uses get_list) ------------------------------
 	def test_lists_are_filtered(self):
@@ -88,6 +93,7 @@ class TestUserScoping(FrappeTestCase):
 		notices = self.names("Notice", filters={"name": ["in", [self.notice_a, self.notice_b, self.notice_gstin_a]]})
 		self.assertEqual({self.notice_a, self.notice_gstin_a}, notices)
 		self.assertEqual({CLIENT_EMAIL}, self.names("GST User"))
+		self.assertEqual({str(self.biz_a)}, self.names("Adaequare Settings"))
 
 	# --- single records (Resource API read/update/delete) ----------------
 	def test_single_records_are_checked(self):
@@ -96,6 +102,10 @@ class TestUserScoping(FrappeTestCase):
 		self.assertFalse(frappe.get_doc("Notice", self.notice_b).has_permission("read"))
 		self.assertFalse(frappe.get_doc("Business", self.biz_b).has_permission("write"))
 		self.assertFalse(frappe.get_doc("GSTIN", GSTIN_B).has_permission("read"))
+		self.assertTrue(frappe.get_doc("Adaequare Settings", str(self.biz_a)).has_permission("read"))
+		self.assertFalse(frappe.get_doc("Adaequare Settings", str(self.biz_b)).has_permission("read"))
+		with self.assertRaises(frappe.PermissionError):
+			frappe.get_doc("Adaequare Settings", str(self.biz_b)).check_permission("write")
 		with self.assertRaises(frappe.PermissionError):
 			frappe.get_doc("Notice", self.notice_b).check_permission("read")
 		with self.assertRaises(frappe.PermissionError):

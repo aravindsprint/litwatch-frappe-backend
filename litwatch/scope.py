@@ -15,7 +15,8 @@ What they see
 -------------
 - GST User found: only the Businesses in its ``businesses`` table, and the
   GSTINs, Notices, Payments, Review Queue Items, Client Documents, Audit Log
-  entries, sync logs and OTP requests that belong to those Businesses.
+  entries, sync logs, OTP requests and Adaequare Settings that belong to those
+  Businesses.
 - No GST User record, but the user is System Manager (firm staff): everything.
 - Anyone else without a GST User record: "GST User ... not found" (HTTP 404),
   the same answer get_clients has always given, so the frontend's existing
@@ -206,6 +207,8 @@ def doc_in_scope(doc):
 		return str(doc.get("client") or "") in scope
 	if dt == "GST User":
 		return (doc.name or "").lower() == (scope_user() or "").lower()
+	if dt == "Adaequare Settings":
+		return str(doc.get("business") or doc.name or "") in scope
 	return True
 
 
@@ -273,3 +276,8 @@ def gst_sync_log_query(user=None, doctype=None):
 
 def gst_otp_request_query(user=None, doctype=None):
 	return _cond(lambda s: _in("`tabGST OTP Request`.`gstin`", scope_gstins(s)))
+
+
+def adaequare_settings_query(user=None, doctype=None):
+	# one record per Business, named by the Business ID
+	return _cond(lambda s: _in("`tabAdaequare Settings`.`name`", s))
