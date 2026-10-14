@@ -1,0 +1,2707 @@
+From 0a17383c8ae02c6e57ef489e35a9c04ac0a7d8ce Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 14 Oct 2026 12:46:08 +0000
+Subject: [PATCH] Onboarding, approval switches and notifications for every
+ update
+
+Approvals (Sync Settings > Approvals, System Manager):
+- Require business approval: a business created by a GST User is Pending until
+  approved in Frappe (Business > Approve / Reject; approve_business,
+  reject_business, get_pending_approvals); its GSTINs stay inactive and can't
+  request an OTP until then. Staff-created businesses are approved.
+- Require GSTIN approval (on by default): off = a verified GSTIN is active at once.
+- get_clients / get_businesses / create_business return approval.
+
+Notifications (App Notification; new kinds approval, account, business,
+payment, document; the person who made the change is left out):
+- notices (created, sync found new, AI analysis ready, review corrections),
+  review item confirmed, payment recorded, document uploaded / retagged,
+  business approved / rejected / waiting, onboarding stage, GSTIN added,
+  connected, consent expired, session ended, GST User welcome / business added /
+  name changed, practice profile updated / renamed.
+- Daily 08:30 job: reply due (per user's reminder days, default 7,3,1), due
+  today, overdue (day 1 then weekly), short reply window, consent expiring
+  (30/7/1 days) and expiry, morning digest, consultant copies.
+
+Onboarding:
+- LitWatch Lead (source, status New/Hold/Rejected/Onboard, collected on, user
+  link; Data Import for Excel) with Convert to User.
+- Account email (set-password link + app URL) when a GST User is created.
+- Registration Invite (one-time token link, email or copied to WhatsApp) and
+  guest APIs get_registration_invite / register (rate limited).
+- Patch onboarding_approvals_defaults; tests test_onboarding_approvals.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016uSTwic31grtwzMMK7rPAR
+---
+ litwatch/api/approvals.py                     | 107 ++++++
+ litwatch/api/business.py                      |  12 +-
+ litwatch/api/clients.py                       |   3 +-
+ litwatch/api/gstin.py                         |  56 +++-
+ litwatch/api/registration.py                  | 111 +++++++
+ litwatch/gstin_status.py                      |  43 ++-
+ litwatch/hooks.py                             |  36 ++
+ .../adaequare_settings/adaequare_settings.py  |  37 ++-
+ .../app_notification/app_notification.json    |   4 +-
+ .../litwatch/doctype/business/business.js     |  55 +++-
+ .../litwatch/doctype/business/business.json   |  22 +-
+ .../litwatch/doctype/business/business.py     |  18 +
+ .../doctype/business/business_list.js         |  10 +
+ .../litwatch/doctype/gst_user/gst_user.json   |  13 +-
+ .../doctype/litwatch_lead/__init__.py         |   0
+ .../doctype/litwatch_lead/litwatch_lead.js    |  39 +++
+ .../doctype/litwatch_lead/litwatch_lead.json  | 181 ++++++++++
+ .../doctype/litwatch_lead/litwatch_lead.py    |  24 ++
+ .../litwatch_lead/litwatch_lead_list.js       |   7 +
+ .../doctype/registration_invite/__init__.py   |   0
+ .../registration_invite.js                    |  33 ++
+ .../registration_invite.json                  | 154 +++++++++
+ .../registration_invite.py                    |  93 ++++++
+ .../doctype/sync_settings/sync_settings.json  |  83 ++++-
+ litwatch/notification_events.py               | 309 ++++++++++++++++++
+ litwatch/notification_jobs.py                 | 183 +++++++++++
+ litwatch/notifications.py                     |  59 +++-
+ litwatch/onboarding.py                        | 126 +++++++
+ litwatch/patches.txt                          |   1 +
+ .../patches/onboarding_approvals_defaults.py  |  28 ++
+ litwatch/settings.py                          |  40 +++
+ litwatch/tests/test_gstin_status.py           |   6 +-
+ litwatch/tests/test_onboarding_approvals.py   | 268 +++++++++++++++
+ 33 files changed, 2108 insertions(+), 53 deletions(-)
+ create mode 100644 litwatch/api/approvals.py
+ create mode 100644 litwatch/api/registration.py
+ create mode 100644 litwatch/litwatch/doctype/business/business_list.js
+ create mode 100644 litwatch/litwatch/doctype/litwatch_lead/__init__.py
+ create mode 100644 litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.js
+ create mode 100644 litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.json
+ create mode 100644 litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.py
+ create mode 100644 litwatch/litwatch/doctype/litwatch_lead/litwatch_lead_list.js
+ create mode 100644 litwatch/litwatch/doctype/registration_invite/__init__.py
+ create mode 100644 litwatch/litwatch/doctype/registration_invite/registration_invite.js
+ create mode 100644 litwatch/litwatch/doctype/registration_invite/registration_invite.json
+ create mode 100644 litwatch/litwatch/doctype/registration_invite/registration_invite.py
+ create mode 100644 litwatch/notification_events.py
+ create mode 100644 litwatch/notification_jobs.py
+ create mode 100644 litwatch/onboarding.py
+ create mode 100644 litwatch/patches/onboarding_approvals_defaults.py
+ create mode 100644 litwatch/settings.py
+ create mode 100644 litwatch/tests/test_onboarding_approvals.py
+
+diff --git a/litwatch/api/approvals.py b/litwatch/api/approvals.py
+new file mode 100644
+index 0000000..f5725d0
+--- /dev/null
++++ b/litwatch/api/approvals.py
+@@ -0,0 +1,107 @@
++# apps/litwatch/litwatch/api/approvals.py
++"""
++Approvals done by the LitWatch team in Frappe.
++
++- Business approval (Sync Settings > Require business approval): a business created
++  by a GST User waits as Pending until approved here.
++- GSTIN connection approval (Require GSTIN approval): approve_gstin_connection /
++  reject_gstin_connection in litwatch.api.gstin.
++
++Only System Manager, and never on behalf of a GST User (frontend shared key + gstUser).
++"""
++
++import frappe
++from frappe import _
++
++from litwatch import scope
++
++
++def check_approver():
++	if "System Manager" not in frappe.get_roles():
++		frappe.throw(_("Only System Manager can approve or reject"), frappe.PermissionError)
++	if scope.get_scope() is not None:
++		# The frontend's shared key acting for a GST User must not approve its own items.
++		frappe.throw(_("Approvals are done by firm staff, not by a GST User"), frappe.PermissionError)
++
++
++def _business(business_id):
++	business_id = str(business_id or frappe.form_dict.get("businessId") or frappe.form_dict.get("business_id") or "").strip()
++	if not business_id:
++		frappe.throw(_("businessId is required"))
++	if not frappe.db.exists("Business", business_id):
++		frappe.throw(_("Business {0} not found").format(business_id), frappe.DoesNotExistError)
++	return frappe.get_doc("Business", business_id)
++
++
++def _result(doc):
++	return {"businessId": str(doc.name), "approval": doc.approval_status, "reason": doc.approval_note or None}
++
++
++@frappe.whitelist(methods=["POST"])
++def approve_business(businessId=None):
++	"""Pending (or Rejected) -> Approved. Its GSTINs can connect; its users are notified."""
++	check_approver()
++	doc = _business(businessId)
++	if doc.approval_status == "Approved":
++		frappe.throw(_("Business {0} is already approved").format(doc.name))
++	doc.approval_status = "Approved"
++	doc.approval_note = None
++	doc.flags.keep_approval_status = True
++	doc.save(ignore_permissions=True)
++	frappe.db.commit()
++	return _result(doc)
++
++
++@frappe.whitelist(methods=["POST"])
++def reject_business(businessId=None, reason=None):
++	"""Pending -> Rejected with a reason. Its users are notified."""
++	check_approver()
++	doc = _business(businessId)
++	reason = str(reason or frappe.form_dict.get("reason") or "").strip()
++	if not reason:
++		frappe.throw(_("reason is required"))
++	if doc.approval_status == "Rejected":
++		frappe.throw(_("Business {0} is already rejected").format(doc.name))
++	doc.approval_status = "Rejected"
++	doc.approval_note = reason[:1000]
++	doc.flags.keep_approval_status = True
++	doc.save(ignore_permissions=True)
++	frappe.db.commit()
++	return _result(doc)
++
++
++@frappe.whitelist(methods=["GET"])
++def get_pending_approvals():
++	"""Everything waiting for the team: pending businesses and GSTINs awaiting verification."""
++	check_approver()
++	businesses = frappe.get_all(
++		"Business",
++		filters={"approval_status": "Pending"},
++		fields=["name", "business_name", "owner", "creation"],
++		order_by="creation asc",
++		limit_page_length=0,
++	)
++	gstins = frappe.get_all(
++		"GSTIN",
++		filters={"consent_status": "verifying"},
++		fields=["name", "business_id", "portal_user_id", "last_checked"],
++		order_by="last_checked asc",
++		limit_page_length=0,
++	)
++	names = {str(k): v for k, v in frappe.get_all("Business", fields=["name", "business_name"], as_list=True)}
++	return {
++		"businesses": [
++			{"businessId": str(b.name), "name": b.business_name, "createdBy": b.owner, "createdOn": str(b.creation)}
++			for b in businesses
++		],
++		"gstins": [
++			{
++				"gstin": g.name,
++				"businessId": str(g.business_id) if g.business_id else None,
++				"businessName": names.get(str(g.business_id)) if g.business_id else None,
++				"portalUserId": g.portal_user_id,
++				"verifiedAt": str(g.last_checked) if g.last_checked else None,
++			}
++			for g in gstins
++		],
++	}
+diff --git a/litwatch/api/business.py b/litwatch/api/business.py
+index 9adcca4..fa738ce 100644
+--- a/litwatch/api/business.py
++++ b/litwatch/api/business.py
+@@ -144,7 +144,13 @@ def create_business(name=None, pan=None, sector=None, firstGstin=None, address=N
+ 
+ 	frappe.db.commit()
+ 	frappe.local.response.http_status_code = 201
+-	return {"businessId": str(business.name), "name": business.business_name, "notices": 0, "gstins": gstins}
++	return {
++		"businessId": str(business.name),
++		"name": business.business_name,
++		"approval": business.approval_status or "Approved",
++		"notices": 0,
++		"gstins": gstins,
++	}
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -205,7 +211,7 @@ def get_businesses():
+ 	businesses = frappe.get_all(
+ 		"Business",
+ 		filters={"name": ["in", allowed]} if allowed is not None else None,
+-		fields=["name", "business_name", "pan", "sector", "status"],
++		fields=["name", "business_name", "pan", "sector", "status", "approval_status", "approval_note"],
+ 		order_by="name asc",
+ 		limit_page_length=0,
+ 	)
+@@ -241,6 +247,8 @@ def get_businesses():
+ 			"pan": b.pan,
+ 			"sector": b.sector,
+ 			"status": b.status,
++			"approval": b.approval_status or "Approved",
++			"approvalNote": b.approval_note or None,
+ 			"gstins": by_business.get(str(b.name), []),
+ 			"notices": notice_counts.get(str(b.name), 0),
+ 		}
+diff --git a/litwatch/api/clients.py b/litwatch/api/clients.py
+index acc6022..f0560cb 100644
+--- a/litwatch/api/clients.py
++++ b/litwatch/api/clients.py
+@@ -80,7 +80,7 @@ def get_clients(gstUser=None):
+ 	businesses = frappe.get_all(
+ 		"Business",
+ 		filters={"name": ["in", allowed]} if allowed is not None else None,
+-		fields=["name", "business_name", "short_name", "pan", "sector"],
++		fields=["name", "business_name", "short_name", "pan", "sector", "approval_status"],
+ 		order_by="name asc",
+ 		limit_page_length=0,
+ 	)
+@@ -126,6 +126,7 @@ def get_clients(gstUser=None):
+ 				"shortName": b.short_name,
+ 				"pan": b.pan,
+ 				"sector": b.sector,
++				"approval": b.approval_status or "Approved",
+ 				"notices": counts.get(key, 0),
+ 				"demand": 0,
+ 				"overdue": 0,
+diff --git a/litwatch/api/gstin.py b/litwatch/api/gstin.py
+index ec98cc2..703e92b 100644
+--- a/litwatch/api/gstin.py
++++ b/litwatch/api/gstin.py
+@@ -76,10 +76,17 @@ def _save_portal_otp(reg, otp=None):
+ 
+ 
+ def _mark_verifying(reg, otp=None):
+-	"""OTP verified (or no OTP needed): wait for approval in Frappe.
++	"""OTP verified (or no OTP needed). With "Require GSTIN approval" on (Sync Settings) the GSTIN
++	waits as verifying for approval in Frappe; with it off it is active for 12 months straight away.
+ 	A GSTIN that is already active stays active (its connection was approved before)."""
++	from litwatch import settings
++
+ 	if reg.consent_status != "active":
+-		reg.consent_status = "verifying"
++		if settings.flag("require_gstin_approval"):
++			reg.consent_status = "verifying"
++		else:
++			reg.consent_status = "active"
++			reg.valid_until = add_months(nowdate(), 12)
+ 		reg.rejection_reason = None
+ 	reg.last_checked = now_datetime()
+ 	_save_portal_otp(reg, otp)
+@@ -103,6 +110,14 @@ def _check_can_connect(reg):
+ 			  "Add them in Frappe first.").format(reg.name),
+ 			title=_("Not set up"),
+ 		)
++	approval = frappe.db.get_value("Business", reg.business_id, "approval_status") if reg.business_id else None
++	if approval in ("Pending", "Rejected"):
++		frappe.throw(
++			_("Business {0} is {1}: its GSTINs can connect once the business is approved.").format(
++				reg.business_id, _("waiting for approval") if approval == "Pending" else _("rejected")
++			),
++			title=_("Business not approved"),
++		)
+ 	if status == "verifying":
+ 		frappe.throw(
+ 			_("GSTIN {0} is waiting for approval in Frappe. A new OTP can be requested after it is approved or rejected.").format(reg.name),
+@@ -308,11 +323,9 @@ def resend_gstin_otp(gstin=None):
+ # 3.4b Approve / reject a verified connection (firm staff, in Frappe)
+ # ---------------------------------------------------------------------------
+ def _check_approver():
+-	if "System Manager" not in frappe.get_roles():
+-		frappe.throw(_("Only System Manager can approve or reject GSTIN connections"), frappe.PermissionError)
+-	if scope.get_scope() is not None:
+-		# The frontend's shared key acting for a GST User must not approve its own connection.
+-		frappe.throw(_("GSTIN connections are approved by firm staff, not by a GST User"), frappe.PermissionError)
++	from litwatch.api.approvals import check_approver
++
++	check_approver()
+ 
+ 
+ @frappe.whitelist(methods=["POST"])
+@@ -440,6 +453,7 @@ def _import_portal_notice(reg, otp, item):
+ 			"portal_metadata": json.dumps(metadata),
+ 		}
+ 	)
++	notice.flags.from_sync = True  # one summary notification per sync instead of one per notice
+ 	notice.insert(ignore_permissions=True)
+ 
+ 	documents = []
+@@ -487,6 +501,19 @@ def _sync_one(reg, sync_run=None):
+ 		reg.db_set({"consent_status": "expired", "portal_otp": None}, update_modified=False)
+ 		remove_encrypted_password("GSTIN", reg.name, "portal_otp")
+ 		gst_portal.store_otp(reg.name, None)
++		from litwatch.notifications import business_name, gstin_recipients, notify
++
++		notify(
++			gstin_recipients(reg.name, reg.business_id),
++			_("Reconnect {0}").format(reg.name),
++			_("The GST portal session of {0} ({1}) has ended. Connect it again with a new OTP to keep syncing notices.").format(
++				reg.name, business_name(reg.business_id)
++			),
++			kind="sync",
++			client=str(reg.business_id) if reg.business_id else None,
++			reference_doctype="GSTIN",
++			reference_name=reg.name,
++		)
+ 		frappe.db.commit()
+ 		raise gst_portal.PortalError(
+ 			_("GST portal session for {0} has expired. Reconnect the GSTIN with a new OTP.").format(reg.name)
+@@ -514,6 +541,21 @@ def _sync_one(reg, sync_run=None):
+ 	status = "failed" if errors else "ok"
+ 	reg.db_set("last_checked", now_datetime(), update_modified=False)
+ 	_write_sync_log(reg.name, seen, found, status, sync_run=sync_run, error="\n".join(errors)[:1000] or None)
++	if found:
++		from litwatch.notifications import business_name, gstin_recipients, notify
++
++		business_id = str(reg.business_id) if reg.business_id else None
++		notify(
++			gstin_recipients(reg.name, business_id),
++			_("{0} new notice(s) for {1}").format(found, reg.name),
++			_("A sync of {0} ({1}) found {2} new notice(s) on the GST portal.").format(
++				reg.name, business_name(business_id), found
++			),
++			kind="sync",
++			client=business_id,
++			reference_doctype="GSTIN",
++			reference_name=reg.name,
++		)
+ 	return {"seen": seen, "found": found, "status": status}
+ 
+ 
+diff --git a/litwatch/api/registration.py b/litwatch/api/registration.py
+new file mode 100644
+index 0000000..8bdcc31
+--- /dev/null
++++ b/litwatch/api/registration.py
+@@ -0,0 +1,111 @@
++# apps/litwatch/litwatch/api/registration.py
++"""
++Self-registration through a token link (Registration Invite). Called by the
++LitWatch app's registration page; no login needed (allow_guest), rate limited.
++
++GET  litwatch.api.registration.get_registration_invite?token=...
++POST litwatch.api.registration.register
++     {token, firstName, lastName?, whatsappNumber, email, practiceType, firmName?, clientCount}
++
++register() saves the details as a LitWatch Lead (source "Registration link",
++status Onboard), creates the User and GST User, marks the invite used, and the
++account email + welcome notification go out (litwatch/onboarding.py).
++"""
++
++import frappe
++from frappe import _
++from frappe.rate_limiter import rate_limit
++from frappe.utils import cint, get_datetime, now_datetime
++
++PRACTICE_TYPES = ("Individual CA", "Firm")
++
++
++def _invite(token):
++	token = str(token or "").strip()
++	name = frappe.db.get_value("Registration Invite", {"token": token}, "name") if token else None
++	if not name:
++		frappe.throw(_("This registration link is not valid."), frappe.PermissionError)
++	doc = frappe.get_doc("Registration Invite", name)
++	if doc.status == "Active" and doc.expires_on and get_datetime(doc.expires_on) < now_datetime():
++		doc.db_set("status", "Expired")
++		frappe.db.commit()
++	if doc.status != "Active":
++		msg = {
++			"Used": _("This registration link was already used. Sign in instead."),
++			"Expired": _("This registration link has expired. Ask the LitWatch team for a new one."),
++		}.get(doc.status, _("This registration link is no longer valid."))
++		frappe.throw(msg, frappe.PermissionError)
++	return doc
++
++
++@frappe.whitelist(allow_guest=True, methods=["GET"])
++@rate_limit(limit=60, seconds=3600)
++def get_registration_invite(token=None):
++	"""Check a token before showing the form; returns the details to pre-fill."""
++	doc = _invite(token or frappe.form_dict.get("token"))
++	first, _sep, last = (doc.invitee_name or "").partition(" ")
++	return {
++		"valid": True,
++		"email": doc.email,
++		"firstName": first or None,
++		"lastName": last or None,
++		"whatsappNumber": doc.whatsapp_number,
++		"expiresOn": str(doc.expires_on) if doc.expires_on else None,
++		"practiceTypes": list(PRACTICE_TYPES),
++	}
++
++
++@frappe.whitelist(allow_guest=True, methods=["POST"])
++@rate_limit(limit=10, seconds=3600)
++def register(token=None, firstName=None, lastName=None, whatsappNumber=None, email=None,
++             practiceType=None, firmName=None, clientCount=None):
++	from litwatch.onboarding import create_account
++
++	f = frappe.form_dict
++	token = token or f.get("token")
++	first = str(firstName or f.get("firstName") or "").strip()
++	last = str(lastName or f.get("lastName") or "").strip() or None
++	phone = str(whatsappNumber or f.get("whatsappNumber") or "").strip()
++	email = str(email or f.get("email") or "").strip().lower()
++	practice = str(practiceType or f.get("practiceType") or "").strip()
++	firm = str(firmName or f.get("firmName") or "").strip() or None
++	clients = clientCount if clientCount is not None else f.get("clientCount")
++
++	invite = _invite(token)
++	missing = [label for label, value in (("firstName", first), ("whatsappNumber", phone), ("email", email),
++	                                      ("practiceType", practice), ("clientCount", clients)) if value in (None, "")]
++	if missing:
++		frappe.throw(_("Required: {0}").format(", ".join(missing)))
++	frappe.utils.validate_email_address(email, throw=True)
++	if practice not in PRACTICE_TYPES:
++		frappe.throw(_("practiceType must be one of: {0}").format(", ".join(PRACTICE_TYPES)))
++	if practice == "Firm" and not firm:
++		frappe.throw(_("firmName is required for a Firm"))
++	if cint(clients) < 0:
++		frappe.throw(_("clientCount can't be negative"))
++	if invite.email and invite.email.lower() != email:
++		frappe.throw(_("Use the email address this invitation was sent to: {0}").format(invite.email))
++	if frappe.db.exists("User", email):
++		frappe.throw(_("An account with this email already exists. Sign in instead."), frappe.DuplicateEntryError)
++
++	lead = frappe.get_doc("LitWatch Lead", invite.lead) if invite.lead and frappe.db.exists("LitWatch Lead", invite.lead) else frappe.new_doc("LitWatch Lead")
++	if lead.is_new():
++		lead.source = "Registration link"
++		lead.collected_on = frappe.utils.nowdate()
++	lead.update({
++		"first_name": first, "last_name": last, "email": email, "whatsapp_number": phone,
++		"practice_type": practice, "firm_name": firm if practice == "Firm" else None,
++		"client_count": cint(clients), "invite": invite.name,
++	})
++	lead.save(ignore_permissions=True) if not lead.is_new() else lead.insert(ignore_permissions=True)
++
++	create_account(email, first, last, phone)
++
++	lead.db_set({"user": email, "status": "Onboard", "converted_on": now_datetime()})
++	invite.db_set({"status": "Used", "registered_user": email, "registered_on": now_datetime(), "lead": lead.name})
++	frappe.db.commit()
++	return {
++		"registered": True,
++		"email": email,
++		"message": _("Your account is ready. Check your email to set your password, then sign in."),
++	}
+diff --git a/litwatch/gstin_status.py b/litwatch/gstin_status.py
+index 2955bef..aa1712f 100644
+--- a/litwatch/gstin_status.py
++++ b/litwatch/gstin_status.py
+@@ -6,7 +6,7 @@ GSTIN connection status (GSTIN.consent_status) and its notifications.
+                   ^                     |
+                   +---- rejected -------+
+ 
+-- inactive : the Business has no working GSP app (Adaequare Settings).
++- inactive : the Business has no working GSP app (Adaequare Settings), or is not approved.
+ - ready    : Adaequare Settings saved, active, and its credentials got a GSP token.
+ - pending  : OTP sent (connect_gstin), not entered yet.
+ - verifying: OTP verified, waiting for approval in Frappe.
+@@ -33,12 +33,21 @@ def business_configured(business_id, exclude_settings=None):
+ 	name = str(business_id)
+ 	if exclude_settings and name == str(exclude_settings):
+ 		return False
++	if frappe.db.get_value("Business", name, "approval_status") in ("Pending", "Rejected"):
++		return False  # GSTINs of a business waiting for (or refused) approval can't connect
+ 	row = frappe.db.get_value(
+ 		"Adaequare Settings", name, ["is_active", "client_id", "credentials_verified"], as_dict=True
+ 	)
+ 	return bool(row and row.is_active and row.client_id and row.credentials_verified)
+ 
+ 
++def refresh_business_gstins(business_id):
++	"""inactive <-> ready for every GSTIN of the Business, after its approval or settings change."""
++	if business_id and business_configured(business_id):
++		return move_business_gstins(business_id, "inactive", "ready")
++	return move_business_gstins(business_id, "ready", "inactive")
++
++
+ def auto_status(doc):
+ 	"""Called from GSTIN.validate: inactive/ready follow the Business's Adaequare Settings."""
+ 	if doc.flags.ignore_auto_status:
+@@ -49,6 +58,18 @@ def auto_status(doc):
+ 	doc.consent_status = "ready" if business_configured(doc.business_id) else "inactive"
+ 
+ 
++def sync_auto_status(gstin):
++	"""After business_id was changed directly in the database: recompute inactive/ready (saves, so it notifies)."""
++	doc = frappe.get_doc("GSTIN", gstin)
++	if (doc.consent_status or "inactive") not in AUTO:
++		return
++	want = "ready" if business_configured(doc.business_id) else "inactive"
++	if want != (doc.consent_status or "inactive"):
++		doc.consent_status = want
++		doc.flags.ignore_auto_status = True
++		doc.save(ignore_permissions=True)
++
++
+ def move_business_gstins(business_id, from_status, to_status):
+ 	"""Move every GSTIN of the Business that is in from_status. Saves each one, so notifications fire."""
+ 	if not business_id:
+@@ -79,6 +100,7 @@ def notify_status_change(doc):
+ 		frappe.db.get_value("Business", business_id, "business_name") if business_id else None
+ 	) or business_id or "-"
+ 	ref = {"client": business_id, "reference_doctype": "GSTIN", "reference_name": doc.name}
++	approval = {"kind": "approval", **ref}
+ 
+ 	if new == "ready" and old == "verifying":
+ 		reason = doc.rejection_reason or _("No reason given")
+@@ -88,7 +110,7 @@ def notify_status_change(doc):
+ 			_("The connection of {0} ({1}) was rejected. Reason: {2}. Connect it again with a new GST portal OTP.").format(
+ 				doc.name, business_name, reason
+ 			),
+-			**ref,
++			**approval,
+ 		)
+ 	elif new == "ready":
+ 		notify(
+@@ -104,14 +126,25 @@ def notify_status_change(doc):
+ 			_("{0} ({1}) verified the GST portal OTP. Approve or reject the connection in Frappe (GSTIN {0}).").format(
+ 				doc.name, business_name
+ 			),
+-			**ref,
++			**approval,
+ 		)
+-	elif new == "active" and old == "verifying":
++	elif new == "active" and old not in (None, "active"):
++		# approved in Frappe (old = verifying), or verified with GSTIN approval switched off
+ 		notify(
+ 			gstin_recipients(doc.name, business_id),
+ 			_("{0} connected").format(doc.name),
+ 			_("{0} ({1}) is connected to the GST portal. Notices will sync until {2}.").format(
+ 				doc.name, business_name, doc.valid_until or "-"
+ 			),
+-			**ref,
++			**(approval if old == "verifying" else ref),
++		)
++	elif new == "expired" and old == "active":
++		notify(
++			gstin_recipients(doc.name, business_id),
++			_("{0} consent expired").format(doc.name),
++			_("The GST portal connection of {0} ({1}) has lapsed. Connect it again with a new OTP to keep syncing notices.").format(
++				doc.name, business_name
++			),
++			kind="sync",
++			client=business_id, reference_doctype="GSTIN", reference_name=doc.name,
+ 		)
+diff --git a/litwatch/hooks.py b/litwatch/hooks.py
+index 910a144..b6ff75d 100644
+--- a/litwatch/hooks.py
++++ b/litwatch/hooks.py
+@@ -284,3 +284,39 @@ has_permission = {
+ 	"GST User": "litwatch.scope.has_permission",
+ 	"Adaequare Settings": "litwatch.scope.has_permission",
+ }
++
++# ---------------------------------------------------------------------------
++# App Notifications (litwatch/notification_events.py, litwatch/notification_jobs.py)
++# ---------------------------------------------------------------------------
++doc_events = {
++	"Notice": {
++		"after_insert": "litwatch.notification_events.notice_after_insert",
++		"on_update": "litwatch.notification_events.notice_on_update",
++	},
++	"Review Queue Item": {"on_update": "litwatch.notification_events.review_item_on_update"},
++	"Payment": {"after_insert": "litwatch.notification_events.payment_after_insert"},
++	"Client Document": {
++		"after_insert": "litwatch.notification_events.client_document_after_insert",
++		"on_update": "litwatch.notification_events.client_document_on_update",
++	},
++	"Business": {
++		"after_insert": "litwatch.notification_events.business_after_insert",
++		"on_update": "litwatch.notification_events.business_on_update",
++	},
++	"GSTIN": {"on_update": "litwatch.notification_events.gstin_on_update"},
++	"GST User": {
++		"after_insert": "litwatch.notification_events.gst_user_after_insert",
++		"on_update": "litwatch.notification_events.gst_user_on_update",
++	},
++	"Firm Profile": {
++		"on_update": "litwatch.notification_events.firm_profile_on_update",
++		"after_rename": "litwatch.notification_events.firm_profile_after_rename",
++	},
++}
++
++scheduler_events = {
++	"cron": {
++		# 08:30 every day (system time zone): deadlines, consent expiry, morning digest
++		"30 8 * * *": ["litwatch.notification_jobs.run_daily"],
++	},
++}
+diff --git a/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.py b/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.py
+index 516318e..af40475 100644
+--- a/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.py
++++ b/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.py
+@@ -38,29 +38,32 @@ class AdaequareSettings(Document):
+ 		)
+ 
+ 	def on_update(self):
+-		"""Check the credentials, then move the Business's GSTINs inactive -> ready (or back)."""
+-		from litwatch.gstin_status import move_business_gstins
++		"""Check the credentials, then move the Business's GSTINs inactive -> ready (or back).
++		GSTINs of a business that is not approved stay inactive (litwatch/gstin_status.py)."""
++		from litwatch.gstin_status import business_configured, refresh_business_gstins
+ 
+ 		if self.flags.credentials_changed:
+ 			self._clear_token()
+ 		ok, error = self._verify_credentials()
+ 		self.db_set("credentials_verified", 1 if ok else 0, update_modified=False)
+ 
+-		if ok:
+-			moved = move_business_gstins(self.business, "inactive", "ready")
+-			if moved:
+-				frappe.msgprint(
+-					_("{0} GSTIN(s) of this business are now Ready to connect: {1}").format(len(moved), ", ".join(moved)),
+-					indicator="green",
+-				)
+-		else:
+-			moved = move_business_gstins(self.business, "ready", "inactive")
+-			if error:
+-				frappe.msgprint(
+-					_("The GSP credentials did not work, so the GSTINs stay Not set up: {0}").format(error),
+-					title=_("Credentials not verified"),
+-					indicator="orange",
+-				)
++		moved = refresh_business_gstins(self.business)
++		if ok and moved and business_configured(self.business):
++			frappe.msgprint(
++				_("{0} GSTIN(s) of this business are now Ready to connect: {1}").format(len(moved), ", ".join(moved)),
++				indicator="green",
++			)
++		elif ok and frappe.db.get_value("Business", self.business, "approval_status") in ("Pending", "Rejected"):
++			frappe.msgprint(
++				_("Credentials verified. The business is not approved yet, so its GSTINs stay Not set up until it is."),
++				indicator="orange",
++			)
++		elif error:
++			frappe.msgprint(
++				_("The GSP credentials did not work, so the GSTINs stay Not set up: {0}").format(error),
++				title=_("Credentials not verified"),
++				indicator="orange",
++			)
+ 
+ 	def on_trash(self):
+ 		from litwatch.gstin_status import move_business_gstins
+diff --git a/litwatch/litwatch/doctype/app_notification/app_notification.json b/litwatch/litwatch/doctype/app_notification/app_notification.json
+index c6103c6..dde58dc 100644
+--- a/litwatch/litwatch/doctype/app_notification/app_notification.json
++++ b/litwatch/litwatch/doctype/app_notification/app_notification.json
+@@ -41,7 +41,7 @@
+    "fieldtype": "Select",
+    "in_list_view": 1,
+    "label": "Kind",
+-   "options": "deadline\nsync\nai\nsystem"
++   "options": "deadline\nsync\nai\nsystem\napproval\naccount\nbusiness\npayment\ndocument"
+   },
+   {
+    "default": "1",
+@@ -80,7 +80,7 @@
+  "grid_page_length": 50,
+  "index_web_pages_for_search": 1,
+  "links": [],
+- "modified": "2026-10-02 18:00:00.000000",
++ "modified": "2026-10-14 19:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Litwatch",
+  "name": "App Notification",
+diff --git a/litwatch/litwatch/doctype/business/business.js b/litwatch/litwatch/doctype/business/business.js
+index 4b062a3..f36dc26 100644
+--- a/litwatch/litwatch/doctype/business/business.js
++++ b/litwatch/litwatch/doctype/business/business.js
+@@ -1,7 +1,54 @@
+ // Copyright (c) 2026, Shahina and contributors
+ // For license information, please see license.txt
+ 
+-// frappe.ui.form.on("Business", {
+-// \trefresh(frm) {
+-// \t},
+-// });
++// Approve / Reject a business created by a GST User while "Require business approval" is on.
++
++frappe.ui.form.on("Business", {
++	refresh(frm) {
++		if (frm.is_new()) return;
++		const status = frm.doc.approval_status || "Approved";
++		if (status === "Pending") {
++			frm.dashboard.set_headline(__("This business is waiting for approval."), "orange");
++		} else if (status === "Rejected") {
++			frm.dashboard.set_headline(__("Rejected: {0}", [frm.doc.approval_note || "-"]), "red");
++		}
++		if (status !== "Approved") {
++			frm.add_custom_button(
++				__("Approve"),
++				() =>
++					frappe.call({
++						method: "litwatch.api.approvals.approve_business",
++						args: { businessId: frm.doc.name },
++						freeze: true,
++						callback: () => {
++							frm.reload_doc();
++							frappe.show_alert({ message: __("Business approved"), indicator: "green" });
++						},
++					}),
++				__("Approval")
++			);
++		}
++		if (status === "Pending") {
++			frm.add_custom_button(
++				__("Reject"),
++				() =>
++					frappe.prompt(
++						{ fieldname: "reason", fieldtype: "Small Text", label: __("Reason"), reqd: 1 },
++						(v) =>
++							frappe.call({
++								method: "litwatch.api.approvals.reject_business",
++								args: { businessId: frm.doc.name, reason: v.reason },
++								freeze: true,
++								callback: () => {
++									frm.reload_doc();
++									frappe.show_alert({ message: __("Business rejected"), indicator: "orange" });
++								},
++							}),
++						__("Reject business"),
++						__("Reject")
++					),
++				__("Approval")
++			);
++		}
++	},
++});
+diff --git a/litwatch/litwatch/doctype/business/business.json b/litwatch/litwatch/doctype/business/business.json
+index 5747c2c..8bea21b 100644
+--- a/litwatch/litwatch/doctype/business/business.json
++++ b/litwatch/litwatch/doctype/business/business.json
+@@ -11,6 +11,8 @@
+   "pan",
+   "sector",
+   "status",
++  "approval_status",
++  "approval_note",
+   "short_name",
+   "firm_profile",
+   "onboarding_stage",
+@@ -54,6 +56,24 @@
+    "in_list_view": 1,
+    "in_standard_filter": 1
+   },
++  {
++   "fieldname": "approval_status",
++   "fieldtype": "Select",
++   "label": "Approval Status",
++   "options": "Approved\nPending\nRejected",
++   "default": "Approved",
++   "read_only": 1,
++   "in_list_view": 1,
++   "in_standard_filter": 1,
++   "description": "Pending: created by a GST User while Require business approval is on; approve or reject it here. Its GSTINs can't request an OTP until approved."
++  },
++  {
++   "fieldname": "approval_note",
++   "fieldtype": "Small Text",
++   "label": "Rejection Reason",
++   "read_only": 1,
++   "depends_on": "eval:doc.approval_status=='Rejected'"
++  },
+   {
+    "fieldname": "short_name",
+    "fieldtype": "Data",
+@@ -105,7 +125,7 @@
+  "grid_page_length": 50,
+  "index_web_pages_for_search": 1,
+  "links": [],
+- "modified": "2026-10-02 18:00:00.000000",
++ "modified": "2026-10-14 19:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Litwatch",
+  "name": "Business",
+diff --git a/litwatch/litwatch/doctype/business/business.py b/litwatch/litwatch/doctype/business/business.py
+index d8b9076..1d00998 100644
+--- a/litwatch/litwatch/doctype/business/business.py
++++ b/litwatch/litwatch/doctype/business/business.py
+@@ -14,7 +14,18 @@ class Business(Document):
+ 		if not doc_in_scope(self):
+ 			return False
+ 		return super().has_permission(permtype, debug=debug, user=user)
++	def before_insert(self):
++		# Require business approval (Sync Settings): a business created by a GST User waits as Pending.
++		if self.flags.keep_approval_status:
++			return
++		from litwatch import scope, settings
++
++		pending = settings.flag("require_business_approval") and scope.get_scope() is not None
++		self.approval_status = "Pending" if pending else "Approved"
++
+ 	def validate(self):
++		if self.approval_status not in ("Approved", "Pending", "Rejected"):
++			self.approval_status = "Approved"
+ 		seen = set()
+ 		rows = []
+ 		for row in self.get("gstins") or []:
+@@ -35,6 +46,11 @@ class Business(Document):
+ 		link_business_to_scope_user(self.name)
+ 
+ 	def on_update(self):
++		from litwatch import gstin_status
++
++		if self.get_doc_before_save() and self.has_value_changed("approval_status"):
++			# Approved: its GSTINs can become ready; Pending / Rejected: back to inactive.
++			gstin_status.refresh_business_gstins(self.name)
+ 		# Keep GSTIN.business_id in step with this table (skip when GSTIN is the one syncing us).
+ 		if self.flags.from_gstin_sync:
+ 			return
+@@ -45,9 +61,11 @@ class Business(Document):
+ 		for gstin in new:
+ 			if str(frappe.db.get_value("GSTIN", gstin, "business_id") or "") != me:
+ 				frappe.db.set_value("GSTIN", gstin, "business_id", me)
++				gstin_status.sync_auto_status(gstin)
+ 		for gstin in old - new:
+ 			if str(frappe.db.get_value("GSTIN", gstin, "business_id") or "") == me:
+ 				frappe.db.set_value("GSTIN", gstin, "business_id", None)
++				gstin_status.sync_auto_status(gstin)
+ 
+ 	def on_trash(self):
+ 		me = str(self.name)
+diff --git a/litwatch/litwatch/doctype/business/business_list.js b/litwatch/litwatch/doctype/business/business_list.js
+new file mode 100644
+index 0000000..0d1f2b1
+--- /dev/null
++++ b/litwatch/litwatch/doctype/business/business_list.js
+@@ -0,0 +1,10 @@
++// Business list: approval status colours; filter Approval Status = Pending to see what waits.
++frappe.listview_settings["Business"] = {
++	add_fields: ["approval_status", "status"],
++	get_indicator(doc) {
++		const s = doc.approval_status || "Approved";
++		if (s === "Pending") return [__("Pending approval"), "orange", "approval_status,=,Pending"];
++		if (s === "Rejected") return [__("Rejected"), "red", "approval_status,=,Rejected"];
++		return [__(doc.status || "Approved"), doc.status === "Inactive" ? "gray" : "green", "status,=," + (doc.status || "")];
++	},
++};
+diff --git a/litwatch/litwatch/doctype/gst_user/gst_user.json b/litwatch/litwatch/doctype/gst_user/gst_user.json
+index b64974f..0575a0f 100644
+--- a/litwatch/litwatch/doctype/gst_user/gst_user.json
++++ b/litwatch/litwatch/doctype/gst_user/gst_user.json
+@@ -8,7 +8,8 @@
+  "field_order": [
+   "user_email_id",
+   "user_name",
+-  "businesses"
++  "businesses",
++  "account_email_sent_on"
+  ],
+  "fields": [
+   {
+@@ -34,12 +35,20 @@
+    "fieldtype": "Table",
+    "label": "Business ID",
+    "options": "GST User Business"
++  },
++  {
++   "fieldname": "account_email_sent_on",
++   "fieldtype": "Datetime",
++   "label": "Account Email Sent On",
++   "read_only": 1,
++   "no_copy": 1,
++   "description": "When the acknowledgement email (account ready + set-password link) was sent."
+   }
+  ],
+  "grid_page_length": 50,
+  "index_web_pages_for_search": 1,
+  "links": [],
+- "modified": "2026-10-12 22:30:00.000000",
++ "modified": "2026-10-14 19:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Litwatch",
+  "name": "GST User",
+diff --git a/litwatch/litwatch/doctype/litwatch_lead/__init__.py b/litwatch/litwatch/doctype/litwatch_lead/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.js b/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.js
+new file mode 100644
+index 0000000..00acbc3
+--- /dev/null
++++ b/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.js
+@@ -0,0 +1,39 @@
++// Copyright (c) 2026, Shahina and contributors
++// For license information, please see license.txt
++
++frappe.ui.form.on("LitWatch Lead", {
++	refresh(frm) {
++		if (frm.is_new()) return;
++		if (!frm.doc.user) {
++			frm.add_custom_button(__("Convert to User"), () => {
++				if (!frm.doc.email) {
++					frappe.msgprint(__("Add the Email ID first."));
++					return;
++				}
++				frappe.confirm(
++					__("Create a LitWatch account for {0} and send the account email?", [frm.doc.email]),
++					() =>
++						frappe.call({
++							method: "litwatch.onboarding.convert_lead",
++							args: { lead: frm.doc.name },
++							freeze: true,
++							callback: (r) => {
++								frm.reload_doc();
++								frappe.show_alert({ message: __("Account created: {0}", [r.message.user]), indicator: "green" });
++							},
++						})
++				);
++			});
++			frm.add_custom_button(__("Registration invite"), () => {
++				frappe.new_doc("Registration Invite", {
++					lead: frm.doc.name,
++					email: frm.doc.email,
++					whatsapp_number: frm.doc.whatsapp_number,
++					invitee_name: frm.doc.full_name,
++				});
++			});
++		} else {
++			frm.dashboard.set_headline(__("Converted to User {0}", [frm.doc.user]), "green");
++		}
++	},
++});
+diff --git a/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.json b/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.json
+new file mode 100644
+index 0000000..07e0302
+--- /dev/null
++++ b/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.json
+@@ -0,0 +1,181 @@
++{
++ "actions": [],
++ "allow_import": 1,
++ "allow_rename": 0,
++ "autoname": "LEAD-.#####",
++ "creation": "2026-10-14 19:00:00.000000",
++ "doctype": "DocType",
++ "editable_grid": 1,
++ "engine": "InnoDB",
++ "field_order": [
++  "first_name",
++  "last_name",
++  "full_name",
++  "email",
++  "whatsapp_number",
++  "column_break_1",
++  "practice_type",
++  "firm_name",
++  "client_count",
++  "crm_section",
++  "status",
++  "source",
++  "collected_on",
++  "column_break_2",
++  "user",
++  "converted_on",
++  "invite",
++  "notes"
++ ],
++ "fields": [
++  {
++   "fieldname": "first_name",
++   "fieldtype": "Data",
++   "label": "First Name",
++   "reqd": 1,
++   "in_list_view": 1
++  },
++  {
++   "fieldname": "last_name",
++   "fieldtype": "Data",
++   "label": "Last Name"
++  },
++  {
++   "fieldname": "full_name",
++   "fieldtype": "Data",
++   "label": "Full Name",
++   "read_only": 1,
++   "hidden": 1
++  },
++  {
++   "fieldname": "email",
++   "fieldtype": "Data",
++   "label": "Email ID",
++   "options": "Email",
++   "in_list_view": 1,
++   "in_standard_filter": 1,
++   "description": "Needed to convert the lead to a User."
++  },
++  {
++   "fieldname": "whatsapp_number",
++   "fieldtype": "Data",
++   "label": "WhatsApp Number",
++   "options": "Phone"
++  },
++  {
++   "fieldname": "column_break_1",
++   "fieldtype": "Column Break"
++  },
++  {
++   "fieldname": "practice_type",
++   "fieldtype": "Select",
++   "label": "Individual CA or Firm",
++   "options": "\nIndividual CA\nFirm"
++  },
++  {
++   "fieldname": "firm_name",
++   "fieldtype": "Data",
++   "label": "Firm Name",
++   "depends_on": "eval:doc.practice_type=='Firm'"
++  },
++  {
++   "fieldname": "client_count",
++   "fieldtype": "Int",
++   "label": "How Many Clients"
++  },
++  {
++   "fieldname": "crm_section",
++   "fieldtype": "Section Break",
++   "label": "Lead"
++  },
++  {
++   "fieldname": "status",
++   "fieldtype": "Select",
++   "label": "Status",
++   "options": "New\nHold\nRejected\nOnboard",
++   "default": "New",
++   "in_list_view": 1,
++   "in_standard_filter": 1,
++   "description": "Onboard is set automatically when the lead is converted to a User."
++  },
++  {
++   "fieldname": "source",
++   "fieldtype": "Select",
++   "label": "Source",
++   "options": "litwatch.in lead form\nExcel import\nRegistration link\nCreated by team\nOther",
++   "default": "litwatch.in lead form",
++   "in_list_view": 1,
++   "in_standard_filter": 1
++  },
++  {
++   "fieldname": "collected_on",
++   "fieldtype": "Date",
++   "label": "Collected On",
++   "default": "Today",
++   "in_list_view": 1
++  },
++  {
++   "fieldname": "column_break_2",
++   "fieldtype": "Column Break"
++  },
++  {
++   "fieldname": "user",
++   "fieldtype": "Link",
++   "label": "User",
++   "options": "User",
++   "read_only": 1,
++   "description": "The User this lead was converted to. The lead is kept after conversion."
++  },
++  {
++   "fieldname": "converted_on",
++   "fieldtype": "Datetime",
++   "label": "Converted On",
++   "read_only": 1
++  },
++  {
++   "fieldname": "invite",
++   "fieldtype": "Link",
++   "label": "Registration Invite",
++   "options": "Registration Invite",
++   "read_only": 1
++  },
++  {
++   "fieldname": "notes",
++   "fieldtype": "Small Text",
++   "label": "Notes"
++  }
++ ],
++ "grid_page_length": 50,
++ "index_web_pages_for_search": 0,
++ "links": [],
++ "modified": "2026-10-14 19:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "Litwatch",
++ "name": "LitWatch Lead",
++ "naming_rule": "Expression (old style)",
++ "owner": "Administrator",
++ "permissions": [
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "import": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "System Manager",
++   "share": 1,
++   "write": 1
++  }
++ ],
++ "row_format": "Dynamic",
++ "rows_threshold_for_grid_search": 20,
++ "sort_field": "creation",
++ "sort_order": "DESC",
++ "states": [],
++ "track_changes": 1,
++ "title_field": "full_name",
++ "show_title_field_in_link": 1,
++ "search_fields": "full_name"
++}
+diff --git a/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.py b/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.py
+new file mode 100644
+index 0000000..fe90735
+--- /dev/null
++++ b/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead.py
+@@ -0,0 +1,24 @@
++# Copyright (c) 2026, Shahina and contributors
++# For license information, please see license.txt
++
++import frappe
++from frappe import _
++from frappe.model.document import Document
++
++
++class LitWatchLead(Document):
++	# Kept after conversion (status Onboard, user set), so the leads can feed a CRM later.
++
++	def validate(self):
++		self.first_name = (self.first_name or "").strip()
++		self.last_name = (self.last_name or "").strip() or None
++		self.full_name = " ".join(p for p in [self.first_name, self.last_name] if p)
++		if self.email:
++			self.email = self.email.strip().lower()
++			frappe.utils.validate_email_address(self.email, throw=True)
++		if self.practice_type != "Firm":
++			self.firm_name = None
++		if self.client_count and self.client_count < 0:
++			frappe.throw(_("How Many Clients can't be negative"))
++		if frappe.flags.in_import and not self.source:
++			self.source = "Excel import"
+diff --git a/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead_list.js b/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead_list.js
+new file mode 100644
+index 0000000..61c4eec
+--- /dev/null
++++ b/litwatch/litwatch/doctype/litwatch_lead/litwatch_lead_list.js
+@@ -0,0 +1,7 @@
++frappe.listview_settings["LitWatch Lead"] = {
++	add_fields: ["status"],
++	get_indicator(doc) {
++		const colours = { New: "blue", Hold: "yellow", Rejected: "red", Onboard: "green" };
++		return [__(doc.status), colours[doc.status] || "gray", "status,=," + doc.status];
++	},
++};
+diff --git a/litwatch/litwatch/doctype/registration_invite/__init__.py b/litwatch/litwatch/doctype/registration_invite/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/litwatch/litwatch/doctype/registration_invite/registration_invite.js b/litwatch/litwatch/doctype/registration_invite/registration_invite.js
+new file mode 100644
+index 0000000..ec2b133
+--- /dev/null
++++ b/litwatch/litwatch/doctype/registration_invite/registration_invite.js
+@@ -0,0 +1,33 @@
++// Copyright (c) 2026, Shahina and contributors
++// For license information, please see license.txt
++
++frappe.ui.form.on("Registration Invite", {
++	refresh(frm) {
++		if (frm.is_new() || frm.doc.status !== "Active") return;
++		const M = "litwatch.litwatch.doctype.registration_invite.registration_invite.";
++		const call = (method, msg) =>
++			frappe.call({
++				method: M + method,
++				args: { invite: frm.doc.name },
++				freeze: true,
++				callback: () => {
++					frm.reload_doc();
++					frappe.show_alert({ message: msg, indicator: "green" });
++				},
++			});
++		if (frm.doc.email) {
++			frm.add_custom_button(__("Send by email"), () => call("send_invite_email", __("Invite emailed")), __("Invite"));
++		}
++		frm.add_custom_button(
++			__("Copy link"),
++			() => frappe.utils.copy_to_clipboard(frm.doc.registration_link),
++			__("Invite")
++		);
++		frm.add_custom_button(
++			__("Mark sent on WhatsApp"),
++			() => call("mark_sent_on_whatsapp", __("Marked as sent on WhatsApp")),
++			__("Invite")
++		);
++		frm.add_custom_button(__("Cancel invite"), () => call("cancel_invite", __("Invite cancelled")), __("Invite"));
++	},
++});
+diff --git a/litwatch/litwatch/doctype/registration_invite/registration_invite.json b/litwatch/litwatch/doctype/registration_invite/registration_invite.json
+new file mode 100644
+index 0000000..b8b81d3
+--- /dev/null
++++ b/litwatch/litwatch/doctype/registration_invite/registration_invite.json
+@@ -0,0 +1,154 @@
++{
++ "actions": [],
++ "allow_import": 1,
++ "allow_rename": 0,
++ "autoname": "INV-.#####",
++ "creation": "2026-10-14 19:00:00.000000",
++ "doctype": "DocType",
++ "editable_grid": 1,
++ "engine": "InnoDB",
++ "field_order": [
++  "invitee_name",
++  "email",
++  "whatsapp_number",
++  "lead",
++  "column_break_1",
++  "status",
++  "expires_on",
++  "sent_via",
++  "sent_on",
++  "link_section",
++  "registration_link",
++  "token",
++  "registered_user",
++  "registered_on"
++ ],
++ "fields": [
++  {
++   "fieldname": "invitee_name",
++   "fieldtype": "Data",
++   "label": "Name",
++   "in_list_view": 1
++  },
++  {
++   "fieldname": "email",
++   "fieldtype": "Data",
++   "label": "Email ID",
++   "options": "Email",
++   "in_list_view": 1,
++   "description": "Pre-filled on the registration form. Needed to send the invite by email."
++  },
++  {
++   "fieldname": "whatsapp_number",
++   "fieldtype": "Data",
++   "label": "WhatsApp Number",
++   "options": "Phone"
++  },
++  {
++   "fieldname": "lead",
++   "fieldtype": "Link",
++   "label": "Lead",
++   "options": "LitWatch Lead"
++  },
++  {
++   "fieldname": "column_break_1",
++   "fieldtype": "Column Break"
++  },
++  {
++   "fieldname": "status",
++   "fieldtype": "Select",
++   "label": "Status",
++   "options": "Active\nUsed\nExpired\nCancelled",
++   "default": "Active",
++   "read_only": 1,
++   "in_list_view": 1,
++   "in_standard_filter": 1
++  },
++  {
++   "fieldname": "expires_on",
++   "fieldtype": "Datetime",
++   "label": "Expires On",
++   "description": "Empty = Sync Settings > Invite valid for (days) from creation."
++  },
++  {
++   "fieldname": "sent_via",
++   "fieldtype": "Select",
++   "label": "Sent Via",
++   "options": "\nEmail\nWhatsApp\nEmail and WhatsApp",
++   "read_only": 1
++  },
++  {
++   "fieldname": "sent_on",
++   "fieldtype": "Datetime",
++   "label": "Sent On",
++   "read_only": 1
++  },
++  {
++   "fieldname": "link_section",
++   "fieldtype": "Section Break",
++   "label": "Link"
++  },
++  {
++   "fieldname": "registration_link",
++   "fieldtype": "Data",
++   "label": "Registration Link",
++   "read_only": 1,
++   "description": "Send this link to the person (email, or copy it into WhatsApp). It works once, until it expires."
++  },
++  {
++   "fieldname": "token",
++   "fieldtype": "Data",
++   "label": "Token",
++   "read_only": 1,
++   "unique": 1,
++   "hidden": 1,
++   "no_copy": 1
++  },
++  {
++   "fieldname": "registered_user",
++   "fieldtype": "Link",
++   "label": "Registered User",
++   "options": "User",
++   "read_only": 1
++  },
++  {
++   "fieldname": "registered_on",
++   "fieldtype": "Datetime",
++   "label": "Registered On",
++   "read_only": 1
++  }
++ ],
++ "grid_page_length": 50,
++ "index_web_pages_for_search": 0,
++ "links": [],
++ "modified": "2026-10-14 19:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "Litwatch",
++ "name": "Registration Invite",
++ "naming_rule": "Expression (old style)",
++ "owner": "Administrator",
++ "permissions": [
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "import": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "System Manager",
++   "share": 1,
++   "write": 1
++  }
++ ],
++ "row_format": "Dynamic",
++ "rows_threshold_for_grid_search": 20,
++ "sort_field": "creation",
++ "sort_order": "DESC",
++ "states": [],
++ "track_changes": 1,
++ "title_field": "invitee_name",
++ "show_title_field_in_link": 1,
++ "search_fields": "invitee_name"
++}
+diff --git a/litwatch/litwatch/doctype/registration_invite/registration_invite.py b/litwatch/litwatch/doctype/registration_invite/registration_invite.py
+new file mode 100644
+index 0000000..42e7104
+--- /dev/null
++++ b/litwatch/litwatch/doctype/registration_invite/registration_invite.py
+@@ -0,0 +1,93 @@
++# Copyright (c) 2026, Shahina and contributors
++# For license information, please see license.txt
++
++import frappe
++from frappe import _
++from frappe.model.document import Document
++from frappe.utils import add_days, escape_html, get_datetime, now_datetime
++
++from litwatch import settings
++
++
++class RegistrationInvite(Document):
++	"""Scenario 3: a one-time token link to the LitWatch registration form."""
++
++	def before_insert(self):
++		self.token = frappe.generate_hash(length=32)
++		self.status = "Active"
++		if not self.expires_on:
++			self.expires_on = add_days(now_datetime(), int(settings.get("invite_valid_days") or 14))
++
++	def validate(self):
++		if self.email:
++			self.email = self.email.strip().lower()
++			frappe.utils.validate_email_address(self.email, throw=True)
++		if not (self.email or self.whatsapp_number):
++			frappe.throw(_("Add an Email ID or a WhatsApp number"))
++		self.registration_link = registration_link(self.token)
++
++	@property
++	def is_usable(self):
++		return self.status == "Active" and not (self.expires_on and get_datetime(self.expires_on) < now_datetime())
++
++
++def registration_link(token):
++	path = "/" + str(settings.get("registration_path") or "/register").strip().lstrip("/")
++	return f"{settings.app_url()}{path}?token={token}"
++
++
++def _check_staff():
++	from litwatch.api.approvals import check_approver
++
++	check_approver()
++
++
++@frappe.whitelist(methods=["POST"])
++def send_invite_email(invite=None):
++	_check_staff()
++	doc = frappe.get_doc("Registration Invite", invite or frappe.form_dict.get("invite"))
++	if not doc.is_usable:
++		frappe.throw(_("Invite {0} is {1}").format(doc.name, doc.status if doc.status != "Active" else _("expired")))
++	if not doc.email:
++		frappe.throw(_("Invite {0} has no Email ID").format(doc.name))
++	name = escape_html(doc.invitee_name or doc.email)
++	frappe.sendmail(
++		recipients=[doc.email],
++		subject=_("Your invitation to LitWatch"),
++		message=(
++			f"<p>{_('Hi {0},').format(name)}</p>"
++			f"<p>{_('You are invited to LitWatch. Register here:')}</p>"
++			f"<p><a href=\"{doc.registration_link}\">{doc.registration_link}</a></p>"
++			f"<p>{_('The link works once and expires on {0}.').format(frappe.utils.format_datetime(doc.expires_on))}</p>"
++			f"<p>{_('— The LitWatch team')}</p>"
++		),
++		reference_doctype=doc.doctype,
++		reference_name=doc.name,
++	)
++	_mark_sent(doc, "Email")
++	return {"sent": True, "to": doc.email}
++
++
++@frappe.whitelist(methods=["POST"])
++def mark_sent_on_whatsapp(invite=None):
++	"""Record that the link was sent by WhatsApp (copied by hand until WhatsApp sending is set up)."""
++	_check_staff()
++	doc = frappe.get_doc("Registration Invite", invite or frappe.form_dict.get("invite"))
++	_mark_sent(doc, "WhatsApp")
++	return {"sentVia": doc.sent_via}
++
++
++@frappe.whitelist(methods=["POST"])
++def cancel_invite(invite=None):
++	_check_staff()
++	doc = frappe.get_doc("Registration Invite", invite or frappe.form_dict.get("invite"))
++	if doc.status == "Used":
++		frappe.throw(_("Invite {0} was already used").format(doc.name))
++	doc.db_set("status", "Cancelled")
++	return {"status": "Cancelled"}
++
++
++def _mark_sent(doc, channel):
++	before = doc.sent_via or ""
++	via = channel if before in ("", channel) else "Email and WhatsApp"
++	doc.db_set({"sent_via": via, "sent_on": now_datetime()})
+diff --git a/litwatch/litwatch/doctype/sync_settings/sync_settings.json b/litwatch/litwatch/doctype/sync_settings/sync_settings.json
+index 9d4f016..f38ef2f 100644
+--- a/litwatch/litwatch/doctype/sync_settings/sync_settings.json
++++ b/litwatch/litwatch/doctype/sync_settings/sync_settings.json
+@@ -8,7 +8,18 @@
+  "field_order": [
+   "daily_call_cap",
+   "otp_validity_minutes",
+-  "mock_portal"
++  "mock_portal",
++  "approvals_section",
++  "require_business_approval",
++  "require_gstin_approval",
++  "accounts_section",
++  "send_account_email",
++  "app_url",
++  "registration_path",
++  "invite_valid_days",
++  "notifications_section",
++  "default_reminder_days",
++  "consent_expiry_days"
+  ],
+  "fields": [
+   {
+@@ -30,13 +41,81 @@
+    "label": "Mock GST Portal",
+    "default": "0",
+    "description": "Testing only. Uses the sample data from the Adaequare collection instead of the real portal: OTP 123456 is accepted and sync imports 3 sample notices with a small PDF each. Never enable in production."
++  },
++  {
++   "fieldname": "approvals_section",
++   "fieldtype": "Section Break",
++   "label": "Approvals"
++  },
++  {
++   "fieldname": "require_business_approval",
++   "fieldtype": "Check",
++   "label": "Require business approval",
++   "default": "0",
++   "description": "On: a business created by a GST User (LitWatch app) waits as Pending until approved in Frappe; its GSTINs can't request an OTP until then. Off: new businesses are approved straight away. Pending businesses are not approved automatically when this is turned off."
++  },
++  {
++   "fieldname": "require_gstin_approval",
++   "fieldtype": "Check",
++   "label": "Require GSTIN approval",
++   "default": "1",
++   "description": "On: after the OTP is verified a GSTIN waits as Awaiting verification until approved in Frappe. Off: a verified GSTIN is connected (active) straight away. GSTINs already waiting stay waiting when this is turned off."
++  },
++  {
++   "fieldname": "accounts_section",
++   "fieldtype": "Section Break",
++   "label": "Accounts and registration"
++  },
++  {
++   "fieldname": "send_account_email",
++   "fieldtype": "Check",
++   "label": "Send account email",
++   "default": "1",
++   "description": "When a GST User is created (by the team, from a lead, or by registration), email the acknowledgement with a set-password link."
++  },
++  {
++   "fieldname": "app_url",
++   "fieldtype": "Data",
++   "label": "LitWatch app URL",
++   "description": "Where users sign in, e.g. https://app.litwatch.in. Used in emails and registration links. Empty = this site's URL."
++  },
++  {
++   "fieldname": "registration_path",
++   "fieldtype": "Data",
++   "label": "Registration page path",
++   "default": "/register",
++   "description": "Path of the registration form in the LitWatch app; the link is <app URL><path>?token=..."
++  },
++  {
++   "fieldname": "invite_valid_days",
++   "fieldtype": "Int",
++   "label": "Invite valid for (days)",
++   "default": "14"
++  },
++  {
++   "fieldname": "notifications_section",
++   "fieldtype": "Section Break",
++   "label": "Notifications"
++  },
++  {
++   "fieldname": "default_reminder_days",
++   "fieldtype": "Data",
++   "label": "Default reply reminders (days before due)",
++   "default": "7,3,1",
++   "description": "Used when a user's Notification Setting has no deadline reminders. Comma-separated days."
++  },
++  {
++   "fieldname": "consent_expiry_days",
++   "fieldtype": "Int",
++   "label": "Warn before consent expiry (days)",
++   "default": "30"
+   }
+  ],
+  "grid_page_length": 50,
+  "index_web_pages_for_search": 1,
+  "issingle": 1,
+  "links": [],
+- "modified": "2026-10-01 12:00:00.000000",
++ "modified": "2026-10-14 19:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Litwatch",
+  "name": "Sync Settings",
+diff --git a/litwatch/notification_events.py b/litwatch/notification_events.py
+new file mode 100644
+index 0000000..33c96ed
+--- /dev/null
++++ b/litwatch/notification_events.py
+@@ -0,0 +1,309 @@
++# apps/litwatch/litwatch/notification_events.py
++"""
++doc_events (hooks.py) that turn changes into App Notifications (litwatch/notifications.py).
++
++Recipients are the GST Users linked to the record's Business (and a GSTIN's own users);
++the person who made the change is left out. GSTIN status changes are handled in
++litwatch/gstin_status.py, deadlines and consent expiry in litwatch/notification_jobs.py.
++"""
++
++import json
++
++import frappe
++from frappe import _
++from frappe.utils import fmt_money
++
++from litwatch.notifications import (
++	approvers,
++	business_name,
++	business_users,
++	firm_profile_users,
++	gstin_recipients,
++	notice_business,
++	notify,
++)
++
++
++def _before(doc):
++	return doc.get_doc_before_save()
++
++
++def _norm_json(value):
++	if value in (None, "", "{}", "[]", "null"):
++		return None
++	if isinstance(value, str):
++		try:
++			value = json.loads(value)
++		except ValueError:
++			return value.strip() or None
++	if value in ({}, []):
++		return None
++	return json.dumps(value, sort_keys=True, default=str)
++
++
++def _changed(doc, field):
++	before = _before(doc)
++	if not before:
++		return False
++	return _norm_json(before.get(field)) != _norm_json(doc.get(field))
++
++
++def _ref(doc, business_id):
++	return {"client": business_id, "reference_doctype": doc.doctype, "reference_name": doc.name}
++
++
++# ---------------------------------------------------------------------------
++# Notices
++# ---------------------------------------------------------------------------
++def notice_after_insert(doc, method=None):
++	if doc.flags.from_sync:
++		return  # a sync sends one summary notification instead (litwatch.api.gstin)
++	business_id = notice_business(doc)
++	notify(
++		business_users(business_id),
++		_("New notice {0}").format(doc.name),
++		_("A notice was added for {0}{1}.").format(
++			business_name(business_id), f" (GSTIN {doc.gstin})" if doc.get("gstin") else ""
++		),
++		kind="system",
++		**_ref(doc, business_id),
++	)
++
++
++def notice_on_update(doc, method=None):
++	before = _before(doc)
++	if not before:
++		return
++	business_id = notice_business(doc)
++	users = business_users(business_id)
++	if _norm_json(doc.get("analysis")) and not _norm_json(before.get("analysis")):
++		notify(
++			users,
++			_("AI analysis ready: {0}").format(doc.name),
++			_("The AI analysis of notice {0} ({1}) is finished.").format(doc.name, business_name(business_id)),
++			kind="ai",
++			**_ref(doc, business_id),
++		)
++	if _norm_json(before.get("review")) and _changed(doc, "review"):
++		notify(
++			users,
++			_("Review corrections saved: {0}").format(doc.name),
++			_("Corrections to the extracted details of notice {0} were saved.").format(doc.name),
++			kind="ai",
++			**_ref(doc, business_id),
++		)
++
++
++def review_item_on_update(doc, method=None):
++	before = _before(doc)
++	if doc.status != "Confirmed" or (before and before.status == "Confirmed"):
++		return
++	business_id = str(doc.client) if doc.get("client") else None
++	notify(
++		business_users(business_id),
++		_("Review confirmed: {0}").format(doc.get("notice") or doc.name),
++		_("{0} confirmed the review item {1}{2}.").format(
++			doc.get("confirmed_by") or _("The team"), doc.name,
++			f" for notice {doc.notice}" if doc.get("notice") else "",
++		),
++		kind="ai",
++		**_ref(doc, business_id),
++	)
++
++
++# ---------------------------------------------------------------------------
++# Payments and documents
++# ---------------------------------------------------------------------------
++def payment_after_insert(doc, method=None):
++	business_id = str(doc.client) if doc.get("client") else None
++	amount = fmt_money(doc.get("amount_paid") or 0, currency="INR")
++	notify(
++		business_users(business_id),
++		_("Payment recorded: {0}").format(amount),
++		_("{0} ({1}) paid for {2}{3}.").format(
++			doc.get("payment_type") or _("Payment"), amount, business_name(business_id),
++			f", notice {doc.notice}" if doc.get("notice") else "",
++		),
++		kind="payment",
++		**_ref(doc, business_id),
++	)
++
++
++def client_document_after_insert(doc, method=None):
++	business_id = str(doc.client) if doc.get("client") else None
++	notify(
++		business_users(business_id),
++		_("Document uploaded: {0}").format(doc.get("file_name") or doc.name),
++		_("{0} was uploaded for {1}{2}.").format(
++			doc.get("document_type") or _("A document"), business_name(business_id),
++			f" ({doc.matter})" if doc.get("matter") else "",
++		),
++		kind="document",
++		**_ref(doc, business_id),
++	)
++
++
++def client_document_on_update(doc, method=None):
++	before = _before(doc)
++	if not before:
++		return
++	if all((before.get(f) or None) == (doc.get(f) or None) for f in ("document_type", "role", "matter")):
++		return
++	business_id = str(doc.client) if doc.get("client") else None
++	notify(
++		business_users(business_id),
++		_("Document retagged: {0}").format(doc.get("file_name") or doc.name),
++		_("Now tagged {0}{1}{2}.").format(
++			doc.get("document_type") or "-",
++			f" / {doc.role}" if doc.get("role") else "",
++			f" / {doc.matter}" if doc.get("matter") else "",
++		),
++		kind="document",
++		**_ref(doc, business_id),
++	)
++
++
++# ---------------------------------------------------------------------------
++# Businesses
++# ---------------------------------------------------------------------------
++def business_after_insert(doc, method=None):
++	if doc.approval_status == "Pending":
++		notify(
++			approvers(),
++			_("Business waiting for approval: {0}").format(doc.business_name),
++			_("{0} (Business {1}) was created in LitWatch by {2}. Approve or reject it in Frappe.").format(
++				doc.business_name, doc.name, doc.owner
++			),
++			kind="approval",
++			**_ref(doc, str(doc.name)),
++		)
++
++
++def business_on_update(doc, method=None):
++	before = _before(doc)
++	if not before:
++		return
++	business_id = str(doc.name)
++	users = business_users(business_id)
++	if before.approval_status != doc.approval_status and doc.approval_status in ("Approved", "Rejected"):
++		if doc.approval_status == "Approved":
++			title, detail = _("Business approved: {0}").format(doc.business_name), _(
++				"{0} is approved. You can now connect its GSTINs."
++			).format(doc.business_name)
++		else:
++			title, detail = _("Business rejected: {0}").format(doc.business_name), _(
++				"{0} was not approved. Reason: {1}"
++			).format(doc.business_name, doc.approval_note or _("No reason given"))
++		notify(users, title, detail, kind="approval", **_ref(doc, business_id))
++	if (before.onboarding_stage or None) != (doc.onboarding_stage or None) and doc.onboarding_stage:
++		notify(
++			users,
++			_("{0}: {1}").format(doc.business_name, doc.onboarding_stage),
++			_("Onboarding stage of {0} changed from {1} to {2}.").format(
++				doc.business_name, before.onboarding_stage or "-", doc.onboarding_stage
++			),
++			kind="business",
++			**_ref(doc, business_id),
++		)
++	if not doc.flags.from_gstin_sync:
++		# GSTINs added from the Business form (the GSTIN side notifies when it is the one that changed)
++		old = {r.gstin for r in before.get("gstins") or []}
++		for gstin in sorted({r.gstin for r in doc.get("gstins") or []} - old):
++			_gstin_added(gstin, business_id)
++
++
++# ---------------------------------------------------------------------------
++# GSTINs (status changes: litwatch/gstin_status.py)
++# ---------------------------------------------------------------------------
++def _gstin_added(gstin, business_id):
++	notify(
++		gstin_recipients(gstin, business_id),
++		_("GSTIN {0} added").format(gstin),
++		_("{0} was added to {1}.").format(gstin, business_name(business_id)),
++		kind="system",
++		client=business_id,
++		reference_doctype="GSTIN",
++		reference_name=gstin,
++	)
++
++
++def gstin_on_update(doc, method=None):
++	if doc.flags.from_business_sync:
++		return
++	before = _before(doc)
++	new = str(doc.business_id) if doc.business_id else None
++	old = str(before.business_id) if before and before.business_id else None
++	if new and new != old:
++		_gstin_added(doc.name, new)
++
++
++# ---------------------------------------------------------------------------
++# GST Users and the practice profile
++# ---------------------------------------------------------------------------
++def gst_user_after_insert(doc, method=None):
++	names = [business_name(r.business) for r in doc.get("businesses") or [] if r.business]
++	notify(
++		[doc.name],
++		_("Welcome to LitWatch"),
++		_("Your LitWatch account is ready.{0}").format(
++			_(" Businesses: {0}.").format(", ".join(names)) if names else ""
++		),
++		kind="account",
++		reference_doctype="GST User",
++		reference_name=doc.name,
++		include_actor=True,  # even when the user registered themselves
++	)
++	from litwatch.onboarding import send_account_email
++
++	send_account_email(doc.name)
++
++
++def gst_user_on_update(doc, method=None):
++	before = _before(doc)
++	if not before:
++		return
++	old = {str(r.business) for r in before.get("businesses") or [] if r.business}
++	added = [str(r.business) for r in doc.get("businesses") or [] if r.business and str(r.business) not in old]
++	for business_id in added:
++		notify(
++			[doc.name],
++			_("Business added: {0}").format(business_name(business_id)),
++			_("{0} was added to your LitWatch account.").format(business_name(business_id)),
++			kind="business",
++			client=business_id,
++			reference_doctype="Business",
++			reference_name=business_id,
++		)
++	if (before.user_name or None) != (doc.user_name or None):
++		notify(
++			[doc.name],
++			_("Account details updated"),
++			_("Your name in LitWatch is now {0}.").format(doc.user_name or "-"),
++			kind="account",
++			reference_doctype="GST User",
++			reference_name=doc.name,
++		)
++
++
++def firm_profile_on_update(doc, method=None):
++	if not _before(doc):
++		return
++	notify(
++		firm_profile_users(doc.name),
++		_("Practice profile updated"),
++		_("The practice profile {0} was updated.").format(doc.name),
++		kind="account",
++		reference_doctype="Firm Profile",
++		reference_name=doc.name,
++	)
++
++
++def firm_profile_after_rename(doc, method=None, old=None, new=None, merge=False):
++	notify(
++		firm_profile_users(new or doc.name),
++		_("Practice renamed"),
++		_("The practice {0} is now called {1}.").format(old or "-", new or doc.name),
++		kind="account",
++		reference_doctype="Firm Profile",
++		reference_name=new or doc.name,
++	)
+diff --git a/litwatch/notification_jobs.py b/litwatch/notification_jobs.py
+new file mode 100644
+index 0000000..09039ec
+--- /dev/null
++++ b/litwatch/notification_jobs.py
+@@ -0,0 +1,183 @@
++# apps/litwatch/litwatch/notification_jobs.py
++"""
++Scheduled notifications (hooks.py scheduler_events, every morning).
++
++- Reply deadlines: "Reply due in N days" on each of the user's reminder days
++  (Notification Setting > Deadline reminders, else Sync Settings > Default reply
++  reminders, 7,3,1), "Reply due today", and "Reply overdue" on day 1 and then weekly.
++- Short reply window (Notification Setting > Short window alerts): a notice added in
++  the last day whose reply is due within 7 days.
++- Consent expiring: active GSTINs whose consent ends in Sync Settings > Warn before
++  consent expiry days (30), 7 or 1 days; lapsed ones are marked expired.
++- Morning digest (Notification Setting > Morning digest): one summary per user.
++- Consultant copies (Notification Setting > Consultant copies): deadline reminders are
++  also sent to the business's default consultant (when that consultant is a User).
++
++Each notification is sent once per user, record and day.
++"""
++
++import frappe
++from frappe import _
++from frappe.utils import add_days, getdate, nowdate
++
++from litwatch import settings
++from litwatch.notifications import business_name, business_users, gstin_recipients, notify
++
++SHORT_WINDOW_DAYS = 7
++
++
++def run_daily():
++	frappe.flags.mute_litwatch_notifications = False
++	for job in (expire_and_warn_consent, deadline_reminders, morning_digest):
++		try:
++			job()
++			frappe.db.commit()
++		except Exception:
++			frappe.db.rollback()
++			frappe.log_error(title=f"LitWatch {job.__name__} failed", message=frappe.get_traceback())
++
++
++# ---------------------------------------------------------------------------
++# helpers
++# ---------------------------------------------------------------------------
++def _sent_today(user, title, reference_doctype, reference_name):
++	return frappe.db.exists(
++		"App Notification",
++		{
++			"user": user,
++			"title": title[:140],
++			"reference_doctype": reference_doctype,
++			"reference_name": reference_name,
++			"creation": [">=", nowdate()],
++		},
++	)
++
++
++def _notify_once(users, title, detail, kind, client, reference_doctype, reference_name):
++	fresh = [u for u in users if not _sent_today(u, title, reference_doctype, reference_name)]
++	if fresh:
++		notify(fresh, title, detail, kind=kind, client=client,
++		       reference_doctype=reference_doctype, reference_name=reference_name)
++
++
++def _user_settings(users):
++	rows = frappe.get_all(
++		"Notification Setting",
++		filters={"user": ["in", list(users) or [""]]},
++		fields=["user", "deadline_reminders", "morning_digest", "short_window_alerts", "consultant_copies"],
++	)
++	return {r.user: r for r in rows}
++
++
++def _consultant_user(business_id):
++	consultant = frappe.db.get_value("Business", business_id, "default_consultant")
++	email = frappe.db.get_value("Consultant", consultant, "email") if consultant else None
++	return email if email and frappe.db.exists("User", email) else None
++
++
++def open_notices(today=None):
++	"""Open (not resolved, not cancelled) notices with their reply due date, via the Command Hub parser."""
++	from litwatch.api import dashboard
++
++	today = today or getdate(nowdate())
++	meta = frappe.get_meta("Notice")
++	json_fields = [f for f in dashboard.JSON_FIELDS if meta.get_field(f)]
++	rows = frappe.get_all(
++		"Notice",
++		filters=[["docstatus", "!=", 2]],
++		fields=["name", "business_id", "gstin", "proceeding_stage", "docstatus", "creation", "modified"] + json_fields,
++		limit_page_length=0,
++	)
++	gstin_business = {g.name: str(g.business_id) for g in frappe.get_all("GSTIN", fields=["name", "business_id"]) if g.business_id}
++	out = []
++	for r in rows:
++		n = dashboard._prepare(dict(r), {})
++		if n["resolvedOn"]:
++			continue
++		business_id = str(n["businessId"]) if n["businessId"] else gstin_business.get(n["gstin"] or "")
++		out.append({**n, "businessId": business_id, "created": getdate(r.creation)})
++	return out
++
++
++# ---------------------------------------------------------------------------
++# jobs
++# ---------------------------------------------------------------------------
++def deadline_reminders(today=None):
++	today = getdate(today or nowdate())
++	notices = [n for n in open_notices(today) if n["due"] and n["businessId"]]
++	users_by_business = {b: business_users(b) for b in {n["businessId"] for n in notices}}
++	prefs = _user_settings({u for us in users_by_business.values() for u in us})
++
++	for n in notices:
++		days_left = (getdate(n["due"]) - today).days
++		bname = business_name(n["businessId"])
++		for user in users_by_business.get(n["businessId"]) or []:
++			pref = prefs.get(user) or frappe._dict()
++			reminder_days = settings.reminder_days(pref.get("deadline_reminders"))
++			title = None
++			if days_left in reminder_days:
++				title = _("Reply due in {0} day(s): {1}").format(days_left, n["id"])
++			elif days_left == 0:
++				title = _("Reply due today: {0}").format(n["id"])
++			elif days_left < 0 and (-days_left == 1 or -days_left % 7 == 0):
++				title = _("Reply overdue by {0} day(s): {1}").format(-days_left, n["id"])
++			elif pref.get("short_window_alerts") and 0 < days_left <= SHORT_WINDOW_DAYS and n["created"] >= add_days(today, -1):
++				title = _("Short reply window: {0}").format(n["id"])
++			if not title:
++				continue
++			detail = _("Notice {0} ({1}{2}): reply due {3}.").format(
++				n["id"], bname, f", {n['noticeType']}" if n.get("noticeType") else "", n["due"]
++			)
++			recipients = [user]
++			if pref.get("consultant_copies"):
++				consultant = _consultant_user(n["businessId"])
++				if consultant:
++					recipients.append(consultant)
++			_notify_once(recipients, title, detail, "deadline", n["businessId"], "Notice", n["id"])
++
++
++def expire_and_warn_consent(today=None):
++	today = getdate(today or nowdate())
++	warn = {int(settings.get("consent_expiry_days") or 30), 7, 1}
++	for g in frappe.get_all("GSTIN", filters={"consent_status": "active", "valid_until": ["is", "set"]},
++	                        fields=["name", "business_id", "valid_until"]):
++		days_left = (getdate(g.valid_until) - today).days
++		business_id = str(g.business_id) if g.business_id else None
++		if days_left < 0:
++			doc = frappe.get_doc("GSTIN", g.name)
++			doc.consent_status = "expired"
++			doc.flags.ignore_auto_status = True
++			doc.save(ignore_permissions=True)  # notifies "consent expired" (litwatch/gstin_status.py)
++		elif days_left in warn:
++			_notify_once(
++				gstin_recipients(g.name, business_id),
++				_("Consent expiring: {0}").format(g.name),
++				_("The GST portal consent of {0} ({1}) ends on {2}. Reconnect it with a new OTP before then.").format(
++					g.name, business_name(business_id), g.valid_until
++				),
++				"deadline", business_id, "GSTIN", g.name,
++			)
++
++
++def morning_digest(today=None):
++	today = getdate(today or nowdate())
++	users = [r.user for r in frappe.get_all("Notification Setting", filters={"morning_digest": 1}, fields=["user"])]
++	if not users:
++		return
++	notices = [n for n in open_notices(today) if n["businessId"]]
++	from litwatch import scope
++
++	for user in users:
++		mine = set(scope._businesses_of(user)) if frappe.db.exists("GST User", user) else None
++		rows = [n for n in notices if mine is None or n["businessId"] in mine]
++		due = [n for n in rows if n["due"] and 0 <= (getdate(n["due"]) - today).days <= 7]
++		overdue = [n for n in rows if n["due"] and getdate(n["due"]) < today]
++		unread = frappe.db.count("App Notification", {"user": user, "unread": 1})
++		_notify_once(
++			[user],
++			_("Morning digest {0}").format(today.strftime("%d %b")),
++			_("{0} open notice(s), {1} due in the next 7 days, {2} overdue, {3} unread notification(s).").format(
++				len(rows), len(due), len(overdue), unread
++			),
++			"deadline", None, "User", user,
++		)
+diff --git a/litwatch/notifications.py b/litwatch/notifications.py
+index eeef29e..d47d81c 100644
+--- a/litwatch/notifications.py
++++ b/litwatch/notifications.py
+@@ -3,23 +3,50 @@
+ App Notifications for the LitWatch UI (header bell, pop-up, Notifications page).
+ 
+ notify() inserts one App Notification per recipient. The UI reads the
+-logged-in user's records (field "user"), so a recipient must be an existing
+-User; unknown emails are skipped. A failure to notify never breaks the action
+-that triggered it: it is written to the Error Log instead.
++logged-in user's records (field "user"), so a recipient must be an existing,
++enabled User; unknown emails are skipped. Users are not notified about their
++own actions (the actor is left out), only about changes made by someone else
++or by the system. Nothing is sent during migrate, patches or data import.
++A failure to notify never breaks the action that triggered it: it is written
++to the Error Log instead.
++
++Kinds: deadline, sync, ai, system, approval, account, business, payment, document.
+ """
+ 
+ import frappe
+ from frappe.utils import now_datetime
+ 
+-KINDS = ("deadline", "sync", "ai", "system")
++KINDS = ("deadline", "sync", "ai", "system", "approval", "account", "business", "payment", "document")
++
++
++def actor():
++	"""Who made the current change: the GST User the request acts for (frontend shared key + gstUser),
++	else the session user. None outside a web request (scheduler, background jobs)."""
++	if not getattr(frappe.local, "request", None):
++		return None
++	try:
++		from litwatch import scope
++
++		return scope.scope_user() or frappe.session.user
++	except Exception:
++		return frappe.session.user
++
++
++def _muted():
++	f = frappe.flags
++	return bool(f.in_patch or f.in_migrate or f.in_install or f.in_import or f.mute_litwatch_notifications)
+ 
+ 
+-def notify(users, title, detail=None, kind="system", client=None, reference_doctype=None, reference_name=None):
+-	"""Create an App Notification for each user (duplicates removed). Returns the number created."""
++def notify(users, title, detail=None, kind="system", client=None, reference_doctype=None, reference_name=None,
++           include_actor=False):
++	"""Create an App Notification for each user (duplicates and the actor removed). Returns the number created."""
++	if _muted():
++		return 0
++	me = None if include_actor else actor()
+ 	recipients = []
+ 	for u in users or []:
+ 		u = str(u or "").strip()
+-		if u and u != "Guest" and u not in recipients:
++		if u and u != "Guest" and u not in recipients and (not me or u.lower() != str(me).lower()):
+ 			recipients.append(u)
+ 	if not recipients:
+ 		return 0
+@@ -105,3 +132,21 @@ def approvers():
+ 	users = set(users) | {"Administrator"}
+ 	enabled = set(frappe.get_all("User", filters={"name": ["in", list(users)], "enabled": 1}, pluck="name"))
+ 	return sorted(u for u in users if u in enabled and u != "Guest")
++
++
++def business_name(business_id):
++	if not business_id:
++		return "-"
++	return frappe.db.get_value("Business", str(business_id), "business_name") or str(business_id)
++
++
++def notice_business(notice):
++	"""Business of a Notice: its business_id, else the Business of its GSTIN."""
++	business_id = notice.get("business_id")
++	if not business_id and notice.get("gstin"):
++		business_id = frappe.db.get_value("GSTIN", str(notice.get("gstin")).upper(), "business_id")
++	return str(business_id) if business_id else None
++
++
++def firm_profile_users(firm_profile):
++	return [u for u in frappe.get_all("Firm User", filters={"firm_profile": firm_profile}, pluck="user") if u]
+diff --git a/litwatch/onboarding.py b/litwatch/onboarding.py
+new file mode 100644
+index 0000000..5112fa3
+--- /dev/null
++++ b/litwatch/onboarding.py
+@@ -0,0 +1,126 @@
++# apps/litwatch/litwatch/onboarding.py
++"""
++How a person gets LitWatch access.
++
++Scenario 1, website lead: LitWatch Lead (imported from Excel with Data Import, or
++  typed in) -> "Convert to User" (convert_lead) -> account email.
++Scenario 2, created by the team: create the User and the GST User in Frappe ->
++  account email (sent when the GST User is created).
++Scenario 3, self-registration: Registration Invite (token link, sent by email or
++  copied into WhatsApp) -> the person fills in the form in the LitWatch app ->
++  litwatch.api.registration.register -> lead + User + GST User -> account email.
++
++The account email ("Your LitWatch account is ready") carries a set-password link
++and the LitWatch app URL (Sync Settings). It is sent once per GST User, from the
++GST User's after_insert (litwatch/notification_events.py), and can be resent.
++"""
++
++import frappe
++from frappe import _
++from frappe.utils import escape_html, now_datetime
++
++from litwatch import settings
++
++
++def _has_password(user):
++	return bool(
++		frappe.db.sql(
++			"SELECT 1 FROM `__Auth` WHERE doctype = 'User' AND name = %s AND fieldname = 'password' LIMIT 1", user
++		)
++	)
++
++
++def send_account_email(email, force=False):
++	"""Email "Your LitWatch account is ready" with a set-password link. Returns True when queued."""
++	if not frappe.db.exists("GST User", email) or not frappe.db.exists("User", email):
++		return False
++	if not force and (not settings.flag("send_account_email") or frappe.db.get_value("GST User", email, "account_email_sent_on")):
++		return False
++	if frappe.flags.in_import or frappe.flags.in_patch or frappe.flags.in_migrate:
++		return False
++	try:
++		user = frappe.get_doc("User", email)
++		app_url = settings.app_url()
++		name = escape_html(user.first_name or user.full_name or email)
++		if _has_password(email):
++			password_line = _("Sign in with your existing password.")
++		else:
++			link = user.reset_password(send_email=False)
++			password_line = _('First <a href="{0}">set your password</a> (the link works once and expires).').format(link)
++		message = "".join(
++			[
++				f"<p>{_('Hi {0},').format(name)}</p>",
++				f"<p>{_('Your LitWatch account is ready.')}</p>",
++				f"<p>{password_line}</p>",
++				f"<p>{_('Then sign in at')} <a href=\"{app_url}\">{app_url}</a> {_('with this email address:')} <b>{escape_html(email)}</b></p>",
++				f"<p>{_('— The LitWatch team')}</p>",
++			]
++		)
++		frappe.sendmail(recipients=[email], subject=_("Your LitWatch account is ready"), message=message,
++		                reference_doctype="GST User", reference_name=email)
++		frappe.db.set_value("GST User", email, "account_email_sent_on", now_datetime(), update_modified=False)
++		return True
++	except Exception:
++		frappe.log_error(title="LitWatch account email failed", message=frappe.get_traceback())
++		return False
++
++
++def create_account(email, first_name, last_name=None, mobile=None):
++	"""User (Website User, no Frappe welcome email) + GST User. The GST User's after_insert sends the
++	account email and the welcome notification. Returns the email."""
++	email = str(email or "").strip().lower()
++	frappe.utils.validate_email_address(email, throw=True)
++	if not frappe.db.exists("User", email):
++		user = frappe.get_doc(
++			{
++				"doctype": "User",
++				"email": email,
++				"first_name": (first_name or email.split("@")[0]).strip(),
++				"last_name": (last_name or "").strip() or None,
++				"mobile_no": (mobile or "").strip() or None,
++				"user_type": "Website User",
++				"send_welcome_email": 0,
++				"enabled": 1,
++			}
++		)
++		user.flags.ignore_permissions = True
++		user.flags.ignore_password_policy = True
++		user.insert()
++	if not frappe.db.exists("GST User", email):
++		full = " ".join(p for p in [(first_name or "").strip(), (last_name or "").strip()] if p) or None
++		frappe.get_doc({"doctype": "GST User", "user_email_id": email, "user_name": full}).insert(ignore_permissions=True)
++	return email
++
++
++@frappe.whitelist(methods=["POST"])
++def convert_lead(lead=None):
++	"""Scenario 1: LitWatch Lead -> User + GST User (status Onboard). The lead is kept."""
++	from litwatch.api.approvals import check_approver
++
++	check_approver()
++	lead = lead or frappe.form_dict.get("lead")
++	doc = frappe.get_doc("LitWatch Lead", lead)
++	if doc.user:
++		frappe.throw(_("Lead {0} is already converted to User {1}").format(doc.name, doc.user))
++	if not doc.email:
++		frappe.throw(_("Lead {0} has no Email ID").format(doc.name))
++	email = create_account(doc.email, doc.first_name, doc.last_name, doc.whatsapp_number)
++	doc.user = email
++	doc.status = "Onboard"
++	doc.converted_on = now_datetime()
++	doc.save(ignore_permissions=True)
++	frappe.db.commit()
++	return {"lead": doc.name, "user": email, "accountEmailSent": bool(frappe.db.get_value("GST User", email, "account_email_sent_on"))}
++
++
++@frappe.whitelist(methods=["POST"])
++def resend_account_email(gstUser=None):
++	"""Send the acknowledgement email again (new set-password link)."""
++	from litwatch.api.approvals import check_approver
++
++	check_approver()
++	email = gstUser or frappe.form_dict.get("gst_user")
++	if not send_account_email(email, force=True):
++		frappe.throw(_("Could not send the account email to {0}. Check the Error Log and the outgoing Email Account.").format(email))
++	frappe.db.commit()
++	return {"sent": True, "to": email}
+diff --git a/litwatch/patches.txt b/litwatch/patches.txt
+index eb73ec2..35a5800 100644
+--- a/litwatch/patches.txt
++++ b/litwatch/patches.txt
+@@ -17,3 +17,4 @@ litwatch.patches.gst_user_email_to_user_link
+ litwatch.patches.adaequare_settings_by_business
+ litwatch.patches.adaequare_settings_fill_business_name
+ litwatch.patches.gstin_ready_status
++litwatch.patches.onboarding_approvals_defaults
+diff --git a/litwatch/patches/onboarding_approvals_defaults.py b/litwatch/patches/onboarding_approvals_defaults.py
+new file mode 100644
+index 0000000..5409fc1
+--- /dev/null
++++ b/litwatch/patches/onboarding_approvals_defaults.py
+@@ -0,0 +1,28 @@
++import frappe
++
++
++def execute():
++	"""Existing businesses are approved; approval switches keep today's behaviour
++	(business approval off, GSTIN approval on); account emails on for new GST Users.
++	Existing GST Users are marked as already emailed so nobody gets a surprise email."""
++	if frappe.db.has_column("Business", "approval_status"):
++		frappe.db.sql(
++			"UPDATE `tabBusiness` SET approval_status = 'Approved' WHERE IFNULL(approval_status, '') = ''"
++		)
++	defaults = {
++		"require_business_approval": 0,
++		"require_gstin_approval": 1,
++		"send_account_email": 1,
++		"registration_path": "/register",
++		"invite_valid_days": 14,
++		"default_reminder_days": "7,3,1",
++		"consent_expiry_days": 30,
++	}
++	for field, value in defaults.items():
++		if frappe.db.get_single_value("Sync Settings", field) in (None, ""):
++			frappe.db.set_single_value("Sync Settings", field, value)
++	if frappe.db.has_column("GST User", "account_email_sent_on"):
++		frappe.db.sql(
++			"UPDATE `tabGST User` SET account_email_sent_on = creation WHERE account_email_sent_on IS NULL"
++		)
++	frappe.db.commit()
+diff --git a/litwatch/settings.py b/litwatch/settings.py
+new file mode 100644
+index 0000000..cab5301
+--- /dev/null
++++ b/litwatch/settings.py
+@@ -0,0 +1,40 @@
++# apps/litwatch/litwatch/settings.py
++"""Reads LitWatch settings (the Sync Settings single) with defaults for values never saved."""
++
++import frappe
++from frappe.utils import cint, get_url
++
++DEFAULTS = {
++	"require_business_approval": 0,
++	"require_gstin_approval": 1,
++	"send_account_email": 1,
++	"app_url": "",
++	"registration_path": "/register",
++	"invite_valid_days": 14,
++	"default_reminder_days": "7,3,1",
++	"consent_expiry_days": 30,
++}
++
++
++def get(fieldname):
++	value = frappe.db.get_single_value("Sync Settings", fieldname)
++	return DEFAULTS.get(fieldname) if value in (None, "") else value
++
++
++def flag(fieldname):
++	return bool(cint(get(fieldname)))
++
++
++def app_url():
++	return (str(get("app_url") or "").strip() or get_url()).rstrip("/")
++
++
++def reminder_days(text=None):
++	"""'7,3,1' -> [7, 3, 1] (positive ints, unique, descending)."""
++	text = text if text not in (None, "") else get("default_reminder_days")
++	days = set()
++	for part in str(text or "").replace(";", ",").split(","):
++		part = part.strip().lower().replace("days", "").replace("day", "").strip()
++		if part.isdigit() and 0 < int(part) <= 365:
++			days.add(int(part))
++	return sorted(days, reverse=True)
+diff --git a/litwatch/tests/test_gstin_status.py b/litwatch/tests/test_gstin_status.py
+index 47fc1f2..809c753 100644
+--- a/litwatch/tests/test_gstin_status.py
++++ b/litwatch/tests/test_gstin_status.py
+@@ -97,17 +97,17 @@ class TestGstinStatus(FrappeTestCase):
+ 		                           "client_secret": "secret", "is_active": 1}).insert(ignore_permissions=True)
+ 		self.assertEqual(1, frappe.db.get_value("Adaequare Settings", self.biz, "credentials_verified"))
+ 		self.assertEqual("ready", self.status(G1))
+-		self.assertEqual(["GSTIN ready to connect"], notes(CLIENT, G1))
++		self.assertEqual(1, notes(CLIENT, G1).count("GSTIN ready to connect"))
+ 
+ 		# saving again does not notify again
+ 		settings.reload()
+ 		settings.save(ignore_permissions=True)
+-		self.assertEqual(["GSTIN ready to connect"], notes(CLIENT, G1))
++		self.assertEqual(1, notes(CLIENT, G1).count("GSTIN ready to connect"))
+ 
+ 		# 3. a GSTIN added later starts as ready
+ 		frappe.get_doc({"doctype": "GSTIN", "gstin": G2, "business_id": self.biz}).insert(ignore_permissions=True)
+ 		self.assertEqual("ready", self.status(G2))
+-		self.assertEqual(["GSTIN ready to connect"], notes(CLIENT, G2))
++		self.assertEqual(1, notes(CLIENT, G2).count("GSTIN ready to connect"))
+ 
+ 		# 4. OTP sent -> pending; verified -> verifying, approvers told
+ 		req = connect_gstin(gstin=G1, portalUserId="statususer")
+diff --git a/litwatch/tests/test_onboarding_approvals.py b/litwatch/tests/test_onboarding_approvals.py
+new file mode 100644
+index 0000000..47986be
+--- /dev/null
++++ b/litwatch/tests/test_onboarding_approvals.py
+@@ -0,0 +1,268 @@
++# Run: bench --site <site> run-tests --module litwatch.tests.test_onboarding_approvals
++# Business / GSTIN approval switches, notifications for updates and reminders,
++# leads, registration invites and self-registration. Uses the mock GST portal.
++# The APIs commit, so test records are deleted before and after the run.
++
++import json
++
++import frappe
++from frappe.tests.utils import FrappeTestCase
++from frappe.utils import add_days, getdate, nowdate
++
++from litwatch import scope
++
++CLIENT = "approvals-test-client@example.com"
++LEAD_EMAIL = "lead-test@example.com"
++REG_EMAIL = "register-test@example.com"
++PREFIX = "Approvals Test"
++G1, G2, G3, G4 = "33APRVA0001A1Z1", "33APRVB0002B1Z2", "33APRVC0003C1Z3", "33APRVD0004D1Z4"
++SETTINGS = ("mock_portal", "require_business_approval", "require_gstin_approval", "send_account_email")
++
++
++def _cleanup():
++	gstins = [G1, G2, G3, G4]
++	businesses = [str(b) for b in frappe.get_all("Business", filters={"business_name": ["like", PREFIX + "%"]}, pluck="name")]
++	notices = frappe.get_all("Notice", filters={"business_id": ["in", businesses or ["-"]]}, pluck="name")
++	emails = [CLIENT, LEAD_EMAIL, REG_EMAIL]
++	frappe.db.delete("App Notification", {"user": ["in", emails]})
++	frappe.db.delete("App Notification", {"reference_name": ["in", gstins + businesses + notices + ["-"]]})
++	for dt in ("GST Sync Log", "GST OTP Request"):
++		frappe.db.delete(dt, {"gstin": ["in", gstins]})
++	frappe.db.delete("Business GSTIN", {"gstin": ["in", gstins]})
++	frappe.db.delete("GSTIN", {"name": ["in", gstins]})
++	if businesses:
++		for dt in ("Payment", "Client Document", "Review Queue Item"):
++			frappe.db.delete(dt, {"client": ["in", businesses]})
++		frappe.db.delete("Notice", {"name": ["in", notices or ["-"]]})
++		frappe.db.delete("Adaequare Settings", {"name": ["in", businesses]})
++		frappe.db.delete("GST User Business", {"business": ["in", businesses]})
++		frappe.db.delete("Business", {"name": ["in", businesses]})
++	for email in emails:
++		frappe.db.delete("GST User Business", {"parent": email})
++		frappe.db.delete("GST User", {"name": email})
++		frappe.db.delete("Notification Setting", {"name": email})
++	frappe.db.delete("LitWatch Lead", {"email": ["in", emails]})
++	frappe.db.delete("Registration Invite", {"email": ["in", emails]})
++	for email in (LEAD_EMAIL, REG_EMAIL):
++		if frappe.db.exists("User", email):
++			frappe.delete_doc("User", email, ignore_permissions=True, force=True)
++	frappe.db.commit()
++
++
++def as_staff():
++	frappe.set_user("Administrator")
++	frappe.local.form_dict = frappe._dict()
++	frappe.local.response = frappe._dict()
++	scope.reset_cache()
++
++
++def as_client():
++	frappe.set_user("Administrator")
++	frappe.local.form_dict = frappe._dict({"gstUser": CLIENT})
++	frappe.local.response = frappe._dict()
++	scope.reset_cache()
++
++
++def titles(user):
++	return frappe.get_all("App Notification", filters={"user": user}, pluck="title", order_by="creation asc")
++
++
++def has_title(user, start):
++	return any(t.startswith(start) for t in titles(user))
++
++
++class TestOnboardingApprovals(FrappeTestCase):
++	@classmethod
++	def setUpClass(cls):
++		super().setUpClass()
++		as_staff()
++		cls.before = {f: frappe.db.get_single_value("Sync Settings", f) for f in SETTINGS}
++		frappe.db.set_single_value("Sync Settings", "mock_portal", 1)
++		_cleanup()
++		if not frappe.db.exists("User", CLIENT):
++			frappe.get_doc({"doctype": "User", "email": CLIENT, "first_name": "Approvals Client",
++			                "user_type": "Website User", "send_welcome_email": 0}).insert(ignore_permissions=True)
++		frappe.get_doc({"doctype": "GST User", "user_email_id": CLIENT}).insert(ignore_permissions=True)
++		frappe.db.commit()
++
++	@classmethod
++	def tearDownClass(cls):
++		as_staff()
++		_cleanup()
++		for f, v in cls.before.items():
++			frappe.db.set_single_value("Sync Settings", f, v)
++		frappe.db.commit()
++		super().tearDownClass()
++
++	def setUp(self):
++		as_staff()
++
++	def _settings(self, business):
++		frappe.get_doc({"doctype": "Adaequare Settings", "business": business, "client_id": "appr-app",
++		                "client_secret": "secret", "is_active": 1}).insert(ignore_permissions=True)
++
++	# --- approvals ---------------------------------------------------------
++	def test_business_approval(self):
++		from litwatch.api.approvals import approve_business, get_pending_approvals, reject_business
++		from litwatch.api.business import add_gstin, create_business
++		from litwatch.api.gstin import connect_gstin
++
++		frappe.db.set_single_value("Sync Settings", "require_business_approval", 1)
++
++		as_client()
++		res = create_business(name=PREFIX + " Pending")
++		biz = res["businessId"]
++		self.assertEqual("Pending", res["approval"])
++		add_gstin(businessId=biz, gstin=G1, portalUserId="apprportal")
++		as_staff()
++		self.assertTrue(has_title("Administrator", "Business waiting for approval"))
++		self.assertIn(biz, [b["businessId"] for b in get_pending_approvals()["businesses"]])
++
++		self._settings(biz)
++		self.assertEqual("inactive", frappe.db.get_value("GSTIN", G1, "consent_status"))  # business not approved yet
++		as_client()
++		with self.assertRaises(frappe.ValidationError):
++			connect_gstin(gstin=G1, portalUserId="apprportal")
++		with self.assertRaises(frappe.PermissionError):
++			approve_business(businessId=biz)  # a GST User can't approve
++
++		as_staff()
++		self.assertEqual("Approved", approve_business(businessId=biz)["approval"])
++		self.assertEqual("ready", frappe.db.get_value("GSTIN", G1, "consent_status"))
++		self.assertTrue(has_title(CLIENT, "Business approved"))
++
++		as_client()
++		other = create_business(name=PREFIX + " Rejected")["businessId"]
++		as_staff()
++		res = reject_business(businessId=other, reason="Duplicate of another client")
++		self.assertEqual("Rejected", res["approval"])
++		self.assertTrue(has_title(CLIENT, "Business rejected"))
++
++		# staff-created businesses are approved even with the switch on
++		staff_biz = create_business(name=PREFIX + " Staff")
++		self.assertEqual("Approved", staff_biz["approval"])
++		frappe.db.set_single_value("Sync Settings", "require_business_approval", 0)
++
++	def test_gstin_approval_off(self):
++		from litwatch.api.gstin import connect_gstin, verify_gstin_otp
++
++		frappe.db.set_single_value("Sync Settings", "require_gstin_approval", 0)
++		try:
++			biz = str(frappe.get_doc({"doctype": "Business", "business_name": PREFIX + " NoApproval"}).insert(ignore_permissions=True).name)
++			gst_user = frappe.get_doc("GST User", CLIENT)
++			gst_user.append("businesses", {"business": biz})
++			gst_user.save(ignore_permissions=True)
++			self.assertTrue(has_title(CLIENT, "Business added"))
++			self._settings(biz)
++			frappe.get_doc({"doctype": "GSTIN", "gstin": G2, "business_id": biz}).insert(ignore_permissions=True)
++			req = connect_gstin(gstin=G2, portalUserId="noapproval")
++			res = verify_gstin_otp(gstin=G2, otpRequestId=req["otpRequestId"], otp="123456")
++			self.assertEqual("active", res["consent"])
++			self.assertTrue(res["validUntil"])
++			self.assertTrue(has_title(CLIENT, f"{G2} connected"))
++		finally:
++			frappe.db.set_single_value("Sync Settings", "require_gstin_approval", 1)
++
++	# --- notifications for updates -----------------------------------------
++	def _client_business(self, name):
++		biz = str(frappe.get_doc({"doctype": "Business", "business_name": PREFIX + " " + name}).insert(ignore_permissions=True).name)
++		gst_user = frappe.get_doc("GST User", CLIENT)
++		gst_user.append("businesses", {"business": biz})
++		gst_user.save(ignore_permissions=True)
++		return biz
++
++	def test_update_notifications(self):
++		biz = self._client_business("Updates")
++
++		frappe.get_doc({"doctype": "Payment", "client": biz, "amount_paid": 2500, "payment_type": "Pre-deposit"}).insert(ignore_permissions=True)
++		self.assertTrue(has_title(CLIENT, "Payment recorded"))
++
++		doc = frappe.get_doc({"doctype": "Client Document", "client": biz, "file": "/files/approvals-test.pdf",
++		                      "file_name": "approvals-test.pdf", "document_type": "Notice"}).insert(ignore_permissions=True)
++		self.assertTrue(has_title(CLIENT, "Document uploaded"))
++		doc.document_type = "Evidence"
++		doc.save(ignore_permissions=True)
++		self.assertTrue(has_title(CLIENT, "Document retagged"))
++
++		notice = frappe.get_doc({"doctype": "Notice", "naming_series": "DRC-.YYYY.-", "client_id": "Administrator",
++		                         "business_id": biz}).insert(ignore_permissions=True)
++		self.assertTrue(has_title(CLIENT, f"New notice {notice.name}"))
++		notice.analysis = json.dumps({"summary": "ok"})
++		notice.save(ignore_permissions=True)
++		self.assertTrue(has_title(CLIENT, f"AI analysis ready: {notice.name}"))
++
++		item = frappe.get_doc({"doctype": "Review Queue Item", "review_id": "APPR-TEST-1", "client": biz,
++		                       "notice": notice.name, "status": "Pending"}).insert(ignore_permissions=True)
++		item.status = "Confirmed"
++		item.save(ignore_permissions=True)
++		self.assertTrue(has_title(CLIENT, "Review confirmed"))
++
++		b = frappe.get_doc("Business", biz)
++		b.onboarding_stage = "Engagement letter sent"
++		b.save(ignore_permissions=True)
++		self.assertTrue(has_title(CLIENT, b.business_name + ": Engagement letter sent"))
++
++	def test_deadline_and_consent_jobs(self):
++		from litwatch import notification_jobs
++
++		biz = self._client_business("Deadlines")
++		today = getdate(nowdate())
++		due = frappe.get_doc({"doctype": "Notice", "naming_series": "DRC-.YYYY.-", "client_id": "Administrator", "business_id": biz,
++		                      "portal_metadata": json.dumps({"dueDateOfReplyIso": str(add_days(today, 3))})}).insert(ignore_permissions=True)
++		late = frappe.get_doc({"doctype": "Notice", "naming_series": "DRC-.YYYY.-", "client_id": "Administrator", "business_id": biz,
++		                       "portal_metadata": json.dumps({"dueDateOfReplyIso": str(add_days(today, -1))})}).insert(ignore_permissions=True)
++		notification_jobs.deadline_reminders(today)
++		notification_jobs.deadline_reminders(today)  # second run: no duplicates
++		self.assertEqual(1, titles(CLIENT).count(f"Reply due in 3 day(s): {due.name}"))
++		self.assertEqual(1, titles(CLIENT).count(f"Reply overdue by 1 day(s): {late.name}"))
++
++		frappe.get_doc({"doctype": "GSTIN", "gstin": G3, "business_id": biz, "consent_status": "active",
++		                "valid_until": add_days(today, 7)}).insert(ignore_permissions=True)
++		frappe.get_doc({"doctype": "GSTIN", "gstin": G4, "business_id": biz, "consent_status": "active",
++		                "valid_until": add_days(today, -1)}).insert(ignore_permissions=True)
++		notification_jobs.expire_and_warn_consent(today)
++		self.assertTrue(has_title(CLIENT, f"Consent expiring: {G3}"))
++		self.assertEqual("expired", frappe.db.get_value("GSTIN", G4, "consent_status"))
++		self.assertTrue(has_title(CLIENT, f"{G4} consent expired"))
++
++	# --- leads and registration --------------------------------------------
++	def test_lead_conversion(self):
++		from litwatch.onboarding import convert_lead
++
++		lead = frappe.get_doc({"doctype": "LitWatch Lead", "first_name": "Lead", "last_name": "Tester", "email": LEAD_EMAIL,
++		                       "whatsapp_number": "+919800000001", "practice_type": "Individual CA", "client_count": 12}).insert(ignore_permissions=True)
++		self.assertEqual("New", lead.status)
++		res = convert_lead(lead=lead.name)
++		self.assertEqual(LEAD_EMAIL, res["user"])
++		lead.reload()
++		self.assertEqual("Onboard", lead.status)
++		self.assertTrue(frappe.db.exists("GST User", LEAD_EMAIL))
++		self.assertTrue(frappe.db.get_value("GST User", LEAD_EMAIL, "account_email_sent_on"))
++		self.assertTrue(has_title(LEAD_EMAIL, "Welcome to LitWatch"))
++
++	def test_self_registration(self):
++		from litwatch.api.registration import get_registration_invite, register
++
++		invite = frappe.get_doc({"doctype": "Registration Invite", "invitee_name": "Reg Tester", "email": REG_EMAIL}).insert(ignore_permissions=True)
++		self.assertTrue(invite.registration_link.endswith("?token=" + invite.token))
++
++		frappe.set_user("Guest")
++		self.assertEqual(REG_EMAIL, get_registration_invite(token=invite.token)["email"])
++		with self.assertRaises(frappe.ValidationError):
++			register(token=invite.token, firstName="Reg", whatsappNumber="+919800000002", email="someone-else@example.com",
++			         practiceType="Firm", firmName="Reg & Co", clientCount=5)
++		res = register(token=invite.token, firstName="Reg", lastName="Tester", whatsappNumber="+919800000002",
++		               email=REG_EMAIL, practiceType="Firm", firmName="Reg & Co", clientCount=5)
++		self.assertTrue(res["registered"])
++		with self.assertRaises(frappe.PermissionError):
++			register(token=invite.token, firstName="Reg", whatsappNumber="+919800000002", email=REG_EMAIL,
++			         practiceType="Firm", firmName="Reg & Co", clientCount=5)  # used once
++		with self.assertRaises(frappe.PermissionError):
++			get_registration_invite(token="not-a-token")
++		as_staff()
++
++		self.assertEqual("Used", frappe.db.get_value("Registration Invite", invite.name, "status"))
++		lead = frappe.get_doc("LitWatch Lead", {"email": REG_EMAIL})
++		self.assertEqual(("Registration link", "Onboard", "Reg & Co", 5), (lead.source, lead.status, lead.firm_name, lead.client_count))
++		self.assertTrue(frappe.db.exists("GST User", REG_EMAIL))
++		self.assertTrue(has_title(REG_EMAIL, "Welcome to LitWatch"))
+-- 
+2.43.0
+
