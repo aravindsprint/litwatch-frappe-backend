@@ -1,0 +1,90 @@
+From 49f9c1b2a8f4c202e02cf6f5ec729d9729887f04 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 14 Oct 2026 12:49:39 +0000
+Subject: [PATCH] Account email: clear Frappe's error message when sending
+ fails; tests capture the email
+
+Without an outgoing Email Account frappe.sendmail throws; the account is
+still created, so the error message must not reach the caller (registration
+would look failed). Convert to User warns that the email was not sent.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016uSTwic31grtwzMMK7rPAR
+---
+ litwatch/onboarding.py                      | 13 ++++++++++++-
+ litwatch/tests/test_onboarding_approvals.py | 13 ++++++++++---
+ 2 files changed, 22 insertions(+), 4 deletions(-)
+
+diff --git a/litwatch/onboarding.py b/litwatch/onboarding.py
+index 5112fa3..8041756 100644
+--- a/litwatch/onboarding.py
++++ b/litwatch/onboarding.py
+@@ -62,6 +62,9 @@ def send_account_email(email, force=False):
+ 		return True
+ 	except Exception:
+ 		frappe.log_error(title="LitWatch account email failed", message=frappe.get_traceback())
++		# The account itself is fine: don't let Frappe's error message reach the caller's response.
++		if getattr(frappe, "clear_last_message", None):
++			frappe.clear_last_message()
+ 		return False
+ 
+ 
+@@ -110,7 +113,15 @@ def convert_lead(lead=None):
+ 	doc.converted_on = now_datetime()
+ 	doc.save(ignore_permissions=True)
+ 	frappe.db.commit()
+-	return {"lead": doc.name, "user": email, "accountEmailSent": bool(frappe.db.get_value("GST User", email, "account_email_sent_on"))}
++	sent = bool(frappe.db.get_value("GST User", email, "account_email_sent_on"))
++	if not sent and settings.flag("send_account_email"):
++		frappe.msgprint(
++			_("The account {0} was created, but the account email could not be sent. Check Email Account "
++			  "(outgoing) and the Error Log, then use Resend account email.").format(email),
++			title=_("Email not sent"),
++			indicator="orange",
++		)
++	return {"lead": doc.name, "user": email, "accountEmailSent": sent}
+ 
+ 
+ @frappe.whitelist(methods=["POST"])
+diff --git a/litwatch/tests/test_onboarding_approvals.py b/litwatch/tests/test_onboarding_approvals.py
+index bee50a2..728ea23 100644
+--- a/litwatch/tests/test_onboarding_approvals.py
++++ b/litwatch/tests/test_onboarding_approvals.py
+@@ -4,6 +4,7 @@
+ # The APIs commit, so test records are deleted before and after the run.
+ 
+ import json
++from unittest.mock import patch
+ 
+ import frappe
+ from frappe.tests.utils import FrappeTestCase
+@@ -236,8 +237,13 @@ class TestOnboardingApprovals(FrappeTestCase):
+ 		lead = frappe.get_doc({"doctype": "LitWatch Lead", "first_name": "Lead", "last_name": "Tester", "email": LEAD_EMAIL,
+ 		                       "whatsapp_number": "+919800000001", "practice_type": "Individual CA", "client_count": 12}).insert(ignore_permissions=True)
+ 		self.assertEqual("New", lead.status)
+-		res = convert_lead(lead=lead.name)
++		with patch("frappe.sendmail") as sendmail:  # no outgoing Email Account needed
++			res = convert_lead(lead=lead.name)
+ 		self.assertEqual(LEAD_EMAIL, res["user"])
++		self.assertTrue(res["accountEmailSent"])
++		sent = sendmail.call_args.kwargs
++		self.assertEqual([LEAD_EMAIL], sent["recipients"])
++		self.assertIn("set your password", sent["message"])
+ 		lead.reload()
+ 		self.assertEqual("Onboard", lead.status)
+ 		self.assertTrue(frappe.db.exists("GST User", LEAD_EMAIL))
+@@ -255,8 +261,9 @@ class TestOnboardingApprovals(FrappeTestCase):
+ 		with self.assertRaises(frappe.ValidationError):
+ 			register(token=invite.token, firstName="Reg", whatsappNumber="+919800000002", email="someone-else@example.com",
+ 			         practiceType="Firm", firmName="Reg & Co", clientCount=5)
+-		res = register(token=invite.token, firstName="Reg", lastName="Tester", whatsappNumber="+919800000002",
+-		               email=REG_EMAIL, practiceType="Firm", firmName="Reg & Co", clientCount=5)
++		with patch("frappe.sendmail"):
++			res = register(token=invite.token, firstName="Reg", lastName="Tester", whatsappNumber="+919800000002",
++			               email=REG_EMAIL, practiceType="Firm", firmName="Reg & Co", clientCount=5)
+ 		self.assertTrue(res["registered"])
+ 		with self.assertRaises(frappe.PermissionError):
+ 			register(token=invite.token, firstName="Reg", whatsappNumber="+919800000002", email=REG_EMAIL,
+-- 
+2.43.0
+
