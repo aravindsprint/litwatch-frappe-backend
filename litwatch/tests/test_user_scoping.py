@@ -1,6 +1,7 @@
 # Run: bench --site <site> set-config allow_tests true
 #      bench --site <site> run-tests --module litwatch.tests.test_user_scoping
-# Everything is created inside the test and rolled back afterwards.
+# The APIs under test commit (create_business, run_all_gstin_sync...), so a rollback
+# is not enough: test records are deleted before and after the run.
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -10,6 +11,26 @@ from litwatch import scope
 GSTIN_A = "33SCOPA0001A1Z1"
 GSTIN_B = "33SCOPB0002B1Z2"
 CLIENT_EMAIL = "scope-test-client@example.com"
+
+
+def _cleanup():
+	"""Delete everything this test creates (left over from an earlier run too)."""
+	gstins = [GSTIN_A, GSTIN_B, "33SCOPC0003C1Z3"]
+	businesses = frappe.get_all("Business", filters={"business_name": ["like", "Scope Test%"]}, pluck="name")
+	businesses = [str(b) for b in businesses]
+	if businesses:
+		frappe.db.delete("Notice", {"business_id": ["in", businesses]})
+		frappe.db.delete("GST User Business", {"business": ["in", businesses]})
+		frappe.db.delete("Business GSTIN", {"parent": ["in", businesses]})
+		frappe.db.delete("Business", {"name": ["in", businesses]})
+	frappe.db.delete("Notice", {"gstin": ["in", gstins]})
+	for dt in ("GST Sync Log", "GST OTP Request"):
+		frappe.db.delete(dt, {"gstin": ["in", gstins]})
+	frappe.db.delete("Business GSTIN", {"gstin": ["in", gstins]})
+	frappe.db.delete("GSTIN", {"name": ["in", gstins]})
+	frappe.db.delete("GST User Business", {"parent": CLIENT_EMAIL})
+	frappe.db.delete("GST User", {"name": CLIENT_EMAIL})
+	frappe.db.commit()
 
 
 def as_gst_user(email=None):
@@ -25,6 +46,7 @@ class TestUserScoping(FrappeTestCase):
 		super().setUpClass()
 		frappe.set_user("Administrator")
 		frappe.local.response = frappe._dict()
+		_cleanup()
 		cls.biz_a = frappe.get_doc({"doctype": "Business", "business_name": "Scope Test A"}).insert(ignore_permissions=True).name
 		cls.biz_b = frappe.get_doc({"doctype": "Business", "business_name": "Scope Test B"}).insert(ignore_permissions=True).name
 		for gstin, biz in ((GSTIN_A, cls.biz_a), (GSTIN_B, cls.biz_b)):
@@ -37,6 +59,12 @@ class TestUserScoping(FrappeTestCase):
 			                "user_type": "Website User", "send_welcome_email": 0}).insert(ignore_permissions=True)
 		frappe.get_doc({"doctype": "GST User", "user_email_id": CLIENT_EMAIL, "user_name": "Scope Client",
 		                "businesses": [{"business": str(cls.biz_a)}]}).insert(ignore_permissions=True)
+
+	@classmethod
+	def tearDownClass(cls):
+		as_gst_user(None)
+		_cleanup()
+		super().tearDownClass()
 
 	def tearDown(self):
 		as_gst_user(None)
