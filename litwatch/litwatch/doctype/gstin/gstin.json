@@ -14,6 +14,7 @@
   "city",
   "portal_user_id",
   "consent_status",
+  "rejection_reason",
   "valid_until",
   "last_checked",
   "portal_otp"
@@ -67,10 +68,18 @@
    "fieldname": "consent_status",
    "fieldtype": "Select",
    "label": "Consent Status",
-   "options": "inactive\npending\nactive\nexpired",
+   "options": "inactive\nready\npending\nverifying\nactive\nexpired",
    "default": "inactive",
    "in_list_view": 1,
-   "in_standard_filter": 1
+   "in_standard_filter": 1,
+   "description": "inactive: no GSP app for the business. ready: Adaequare Settings saved, can connect. pending: OTP sent. verifying: OTP verified, waiting for approval in Frappe. active: approved, syncing. expired: consent lapsed."
+  },
+  {
+   "fieldname": "rejection_reason",
+   "fieldtype": "Small Text",
+   "label": "Rejection Reason",
+   "read_only": 1,
+   "description": "Why the last connection was rejected in Frappe (cleared on approval)"
   },
   {
    "fieldname": "valid_until",
@@ -94,7 +103,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-02 12:00:00.000000",
+ "modified": "2026-10-14 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "GSTIN",

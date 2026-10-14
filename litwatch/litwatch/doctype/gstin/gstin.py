@@ -8,6 +8,7 @@ from frappe import _
 from frappe.model.document import Document
 
 GSTIN_RE = re.compile(r"[0-9]{2}[A-Z0-9]{13}")
+VALID_STATUSES = ("inactive", "ready", "pending", "verifying", "active", "expired")
 
 
 class GSTIN(Document):
@@ -29,8 +30,17 @@ class GSTIN(Document):
 			self.business_id = str(self.business_id).strip()
 			if not frappe.db.exists("Business", self.business_id):
 				frappe.throw(_("Business {0} not found").format(self.business_id))
+		if self.consent_status and self.consent_status not in VALID_STATUSES:
+			frappe.throw(_("Invalid consent status: {0}").format(self.consent_status))
+		# inactive / ready follow the Business's Adaequare Settings (also for GSTINs added later)
+		from litwatch.gstin_status import auto_status
+
+		auto_status(self)
 
 	def on_update(self):
+		from litwatch.gstin_status import notify_status_change
+
+		notify_status_change(self)
 		# Keep Business.gstins in step with business_id (skip when Business is the one syncing us).
 		if self.flags.from_business_sync:
 			return

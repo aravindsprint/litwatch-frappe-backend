@@ -48,6 +48,9 @@ class TestUserScoping(FrappeTestCase):
 		super().setUpClass()
 		frappe.set_user("Administrator")
 		frappe.local.response = frappe._dict()
+		# Mock portal: saving Adaequare Settings below must not call the real GSP to check credentials
+		cls.mock_before = frappe.db.get_single_value("Sync Settings", "mock_portal")
+		frappe.db.set_single_value("Sync Settings", "mock_portal", 1)
 		_cleanup()
 		cls.biz_a = frappe.get_doc({"doctype": "Business", "business_name": "Scope Test A"}).insert(ignore_permissions=True).name
 		cls.biz_b = frappe.get_doc({"doctype": "Business", "business_name": "Scope Test B"}).insert(ignore_permissions=True).name
@@ -69,6 +72,8 @@ class TestUserScoping(FrappeTestCase):
 	def tearDownClass(cls):
 		as_gst_user(None)
 		_cleanup()
+		frappe.db.set_single_value("Sync Settings", "mock_portal", cls.mock_before or 0)
+		frappe.db.commit()
 		super().tearDownClass()
 
 	def tearDown(self):

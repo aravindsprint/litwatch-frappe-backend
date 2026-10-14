@@ -12,7 +12,7 @@ from frappe.utils import add_months, add_to_date, get_datetime, getdate, now_dat
 from litwatch import scope
 from litwatch.api import gst_portal
 
-VALID_CONSENT = ("inactive", "pending", "active", "expired")
+VALID_CONSENT = ("inactive", "ready", "pending", "verifying", "active", "expired")
 
 
 # ---------------------------------------------------------------------------
@@ -61,21 +61,63 @@ def _iso(dt):
 	return get_datetime(dt).isoformat() + "Z" if dt else None
 
 
-def _activate(reg, otp=None):
-	"""Consent active for 12 months. Stores the OTP for later calls, or clears any
-	old one when the portal session was already active (no OTP needed)."""
+def _save_portal_otp(reg, otp=None):
+	"""Keep the OTP for notice calls while the portal session lasts (encrypted on the GSTIN and in the
+	OTP field of the Business's Adaequare Settings), or clear any old one when no OTP was needed."""
+	from frappe.utils.password import remove_encrypted_password
+
+	if otp:
+		reg.portal_otp = str(otp).strip()
+	reg.save(ignore_permissions=True)
+	gst_portal.store_otp(reg.name, otp)
+	if not otp:
+		remove_encrypted_password("GSTIN", reg.name, "portal_otp")
+		reg.db_set("portal_otp", None, update_modified=False)
+
+
+def _mark_verifying(reg, otp=None):
+	"""OTP verified (or no OTP needed): wait for approval in Frappe.
+	A GSTIN that is already active stays active (its connection was approved before)."""
+	if reg.consent_status != "active":
+		reg.consent_status = "verifying"
+		reg.rejection_reason = None
+	reg.last_checked = now_datetime()
+	_save_portal_otp(reg, otp)
+
+
+def _activate(reg):
+	"""Approved: consent active for 12 months. The saved OTP is kept."""
 	reg.consent_status = "active"
 	reg.valid_until = add_months(nowdate(), 12)
 	reg.last_checked = now_datetime()
-	if otp:
-		reg.portal_otp = str(otp).strip()  # sent with notice API calls while the session lasts
+	reg.rejection_reason = None
 	reg.save(ignore_permissions=True)
-	gst_portal.store_otp(reg.name, otp)  # also the "OTP" field of the Business's Adaequare Settings
-	if not otp:
-		from frappe.utils.password import remove_encrypted_password
 
-		remove_encrypted_password("GSTIN", reg.name, "portal_otp")
-		reg.db_set("portal_otp", None, update_modified=False)
+
+def _check_can_connect(reg):
+	"""OTP requests need a GSP app for the Business, and none while an approval is waiting."""
+	status = reg.consent_status or "inactive"
+	if status == "inactive" and not gst_portal.is_mock():
+		frappe.throw(
+			_("GSTIN {0} is not set up yet: its Business has no active, verified Adaequare Settings (GSP app). "
+			  "Add them in Frappe first.").format(reg.name),
+			title=_("Not set up"),
+		)
+	if status == "verifying":
+		frappe.throw(
+			_("GSTIN {0} is waiting for approval in Frappe. A new OTP can be requested after it is approved or rejected.").format(reg.name),
+			title=_("Awaiting verification"),
+		)
+
+
+def _connection_result(reg, otp_request_id=None, sent_to=None, otp_required=None):
+	out = {
+		"consent": reg.consent_status,
+		"validUntil": str(reg.valid_until) if reg.valid_until else None,
+	}
+	if otp_request_id is not None:
+		out.update({"otpRequestId": otp_request_id, "otpSentTo": sent_to, "otpRequired": otp_required})
+	return out
 
 
 def _new_otp_request(gstin, otp_sent_to, status="pending"):
@@ -173,14 +215,14 @@ def connect_gstin(gstin=None, portalUserId=None):
 		frappe.throw(_("portalUserId is required"))
 
 	reg = _get_registration(gstin)
+	_check_can_connect(reg)
 
 	result = gst_portal.request_otp(gstin, portalUserId)
 	reg.portal_user_id = portalUserId
 
 	if result["session_active"]:
-		# The portal answered without an OTP: connected straight away,
-		# the same as a successful verify.
-		_activate(reg)
+		# The portal answered without an OTP: same as a verified OTP, waits for approval.
+		_mark_verifying(reg)
 		otp_request_id = _new_otp_request(gstin, result["sent_to"], status="verified")
 	else:
 		if reg.consent_status != "active":
@@ -189,13 +231,7 @@ def connect_gstin(gstin=None, portalUserId=None):
 		otp_request_id = _new_otp_request(gstin, result["sent_to"])
 	frappe.db.commit()
 
-	return {
-		"otpSentTo": result["sent_to"],
-		"otpRequestId": otp_request_id,
-		"otpRequired": not result["session_active"],
-		"consent": reg.consent_status,
-		"validUntil": str(reg.valid_until) if reg.valid_until else None,
-	}
+	return _connection_result(reg, otp_request_id, result["sent_to"], not result["session_active"])
 
 
 # ---------------------------------------------------------------------------
@@ -235,13 +271,13 @@ def verify_gstin_otp(gstin=None, otpRequestId=None, otp=None):
 		frappe.db.commit()  # keep the API usage count for the failed attempt
 		frappe.throw(_("Invalid OTP"))
 
-	_activate(reg, otp)
+	_mark_verifying(reg, otp)
 
 	otp_req.status = "verified"
 	otp_req.save(ignore_permissions=True)
 	frappe.db.commit()
 
-	return {"consent": reg.consent_status, "validUntil": str(reg.valid_until)}
+	return _connection_result(reg)
 
 
 # ---------------------------------------------------------------------------
@@ -255,21 +291,65 @@ def resend_gstin_otp(gstin=None):
 	if not reg.portal_user_id:
 		frappe.throw(_("GSTIN {0} has no portal user id. Call connect first.").format(gstin))
 
+	_check_can_connect(reg)
+
 	result = gst_portal.request_otp(gstin, reg.portal_user_id)
 	if result["session_active"]:
-		_activate(reg)
+		_mark_verifying(reg)
 		otp_request_id = _new_otp_request(gstin, result["sent_to"], status="verified")
 	else:
 		otp_request_id = _new_otp_request(gstin, result["sent_to"])
 	frappe.db.commit()
 
-	return {
-		"otpRequestId": otp_request_id,
-		"otpSentTo": result["sent_to"],
-		"otpRequired": not result["session_active"],
-		"consent": reg.consent_status,
-		"validUntil": str(reg.valid_until) if reg.valid_until else None,
-	}
+	return _connection_result(reg, otp_request_id, result["sent_to"], not result["session_active"])
+
+
+# ---------------------------------------------------------------------------
+# 3.4b Approve / reject a verified connection (firm staff, in Frappe)
+# ---------------------------------------------------------------------------
+def _check_approver():
+	if "System Manager" not in frappe.get_roles():
+		frappe.throw(_("Only System Manager can approve or reject GSTIN connections"), frappe.PermissionError)
+	if scope.get_scope() is not None:
+		# The frontend's shared key acting for a GST User must not approve its own connection.
+		frappe.throw(_("GSTIN connections are approved by firm staff, not by a GST User"), frappe.PermissionError)
+
+
+@frappe.whitelist(methods=["POST"])
+def approve_gstin_connection(gstin=None):
+	"""verifying -> active (consent valid for 12 months). Notifies the business's users."""
+	_check_approver()
+	gstin = str(gstin or _pick(_request_params(), "gstin") or "").strip().upper()
+	reg = _get_registration(gstin)
+	if reg.consent_status != "verifying":
+		frappe.throw(_("GSTIN {0} is not waiting for verification (status: {1})").format(gstin, reg.consent_status))
+	_activate(reg)
+	frappe.db.commit()
+	return _connection_result(reg)
+
+
+@frappe.whitelist(methods=["POST"])
+def reject_gstin_connection(gstin=None, reason=None):
+	"""verifying -> ready (or inactive if the business's GSP app is gone). Clears the saved OTP."""
+	_check_approver()
+	p = _request_params()
+	gstin = str(gstin or _pick(p, "gstin") or "").strip().upper()
+	reason = str(reason or _pick(p, "reason") or "").strip()
+	if not reason:
+		frappe.throw(_("reason is required"))
+	reg = _get_registration(gstin)
+	if reg.consent_status != "verifying":
+		frappe.throw(_("GSTIN {0} is not waiting for verification (status: {1})").format(gstin, reg.consent_status))
+	from frappe.utils.password import remove_encrypted_password
+
+	reg.rejection_reason = reason[:1000]
+	reg.consent_status = "ready"  # GSTIN.validate turns it into inactive if the GSP app is no longer set up
+	reg.save(ignore_permissions=True)
+	# Clear this GSTIN's own OTP. The Business's Adaequare Settings OTP is shared with its other GSTINs.
+	remove_encrypted_password("GSTIN", reg.name, "portal_otp")
+	reg.db_set("portal_otp", None, update_modified=False)
+	frappe.db.commit()
+	return _connection_result(reg)
 
 
 # ---------------------------------------------------------------------------

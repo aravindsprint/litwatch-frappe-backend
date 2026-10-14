@@ -4,7 +4,9 @@
 // GST Portal buttons: request / verify / resend the portal OTP for one of this
 // Business's GSTINs, using the same APIs as the LitWatch frontend
 // (litwatch.api.gstin.connect_gstin / verify_gstin_otp / resend_gstin_otp).
-// A verified OTP is saved into the OTP field of this record.
+// A verified OTP is saved into the OTP field of this record and the GSTIN waits
+// for approval ("verifying"); Approve / Reject connection finish the flow
+// (litwatch.api.gstin.approve_gstin_connection / reject_gstin_connection).
 
 (() => {
 	const GROUP = __("GST Portal");
@@ -16,6 +18,8 @@
 			frm.add_custom_button(__("Request OTP"), () => request_otp(frm), GROUP);
 			frm.add_custom_button(__("Verify OTP"), () => verify_otp(frm), GROUP);
 			frm.add_custom_button(__("Resend OTP"), () => resend_otp(frm), GROUP);
+			frm.add_custom_button(__("Approve connection"), () => decide(frm, "approve"), GROUP);
+			frm.add_custom_button(__("Reject connection"), () => decide(frm, "reject"), GROUP);
 		},
 	});
 
@@ -56,17 +60,21 @@
 		return rows[0];
 	}
 
+	function status_message(gstin, res) {
+		if (res.consent === "active") {
+			return __("{0} is connected. Consent valid until {1}.", [gstin, res.validUntil || "-"]);
+		}
+		return __("{0} is now Awaiting verification. Approve or reject the connection (GST Portal → Approve connection).", [gstin]);
+	}
+
 	function after_request(frm, gstin, r) {
 		const res = r.message || {};
 		frm.reload_doc();
 		if (!res.otpRequired) {
 			frappe.msgprint({
-				title: __("Connected"),
+				title: __("No OTP needed"),
 				indicator: "green",
-				message: __("The GST portal session for {0} is already active: no OTP needed. Consent valid until {1}.", [
-					gstin,
-					res.validUntil || "-",
-				]),
+				message: __("The GST portal session for {0} is already active.", [gstin]) + " " + status_message(gstin, res),
 			});
 			return;
 		}
@@ -184,10 +192,47 @@
 						frappe.msgprint({
 							title: __("OTP verified"),
 							indicator: "green",
-							message: __("{0} is connected. Consent valid until {1}. The OTP is saved in this record.", [
-								gstin,
-								res.validUntil || "-",
-							]),
+							message: status_message(gstin, res) + " " + __("The OTP is saved in this record."),
+						});
+					},
+				});
+			},
+		});
+		d.show();
+	}
+
+	async function decide(frm, action) {
+		const rows = (await business_gstins(frm)).filter((r) => r.consent_status === "verifying");
+		if (!rows.length) {
+			frappe.msgprint(__("No GSTIN of this Business is waiting for verification."));
+			return;
+		}
+		const fields = [gstin_field(rows)];
+		if (action === "reject") {
+			fields.push({ fieldname: "reason", fieldtype: "Small Text", label: __("Reason"), reqd: 1 });
+		}
+		const d = new frappe.ui.Dialog({
+			title: action === "approve" ? __("Approve GSTIN connection") : __("Reject GSTIN connection"),
+			fields,
+			primary_action_label: action === "approve" ? __("Approve") : __("Reject"),
+			primary_action(values) {
+				d.hide();
+				frappe.call({
+					method:
+						action === "approve"
+							? "litwatch.api.gstin.approve_gstin_connection"
+							: "litwatch.api.gstin.reject_gstin_connection",
+					args: action === "approve" ? { gstin: values.gstin } : { gstin: values.gstin, reason: values.reason },
+					freeze: true,
+					callback: (r) => {
+						const res = r.message || {};
+						frm.reload_doc();
+						frappe.show_alert({
+							message:
+								action === "approve"
+									? __("{0} connected until {1}", [values.gstin, res.validUntil || "-"])
+									: __("{0} rejected; it is back to {1}", [values.gstin, res.consent]),
+							indicator: action === "approve" ? "green" : "orange",
 						});
 					},
 				});
