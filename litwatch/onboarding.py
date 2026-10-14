@@ -62,6 +62,9 @@ def send_account_email(email, force=False):
 		return True
 	except Exception:
 		frappe.log_error(title="LitWatch account email failed", message=frappe.get_traceback())
+		# The account itself is fine: don't let Frappe's error message reach the caller's response.
+		if getattr(frappe, "clear_last_message", None):
+			frappe.clear_last_message()
 		return False
 
 
@@ -110,7 +113,15 @@ def convert_lead(lead=None):
 	doc.converted_on = now_datetime()
 	doc.save(ignore_permissions=True)
 	frappe.db.commit()
-	return {"lead": doc.name, "user": email, "accountEmailSent": bool(frappe.db.get_value("GST User", email, "account_email_sent_on"))}
+	sent = bool(frappe.db.get_value("GST User", email, "account_email_sent_on"))
+	if not sent and settings.flag("send_account_email"):
+		frappe.msgprint(
+			_("The account {0} was created, but the account email could not be sent. Check Email Account "
+			  "(outgoing) and the Error Log, then use Resend account email.").format(email),
+			title=_("Email not sent"),
+			indicator="orange",
+		)
+	return {"lead": doc.name, "user": email, "accountEmailSent": sent}
 
 
 @frappe.whitelist(methods=["POST"])

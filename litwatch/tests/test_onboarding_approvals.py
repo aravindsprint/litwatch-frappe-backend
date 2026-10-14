@@ -4,6 +4,7 @@
 # The APIs commit, so test records are deleted before and after the run.
 
 import json
+from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -236,8 +237,13 @@ class TestOnboardingApprovals(FrappeTestCase):
 		lead = frappe.get_doc({"doctype": "LitWatch Lead", "first_name": "Lead", "last_name": "Tester", "email": LEAD_EMAIL,
 		                       "whatsapp_number": "+919800000001", "practice_type": "Individual CA", "client_count": 12}).insert(ignore_permissions=True)
 		self.assertEqual("New", lead.status)
-		res = convert_lead(lead=lead.name)
+		with patch("frappe.sendmail") as sendmail:  # no outgoing Email Account needed
+			res = convert_lead(lead=lead.name)
 		self.assertEqual(LEAD_EMAIL, res["user"])
+		self.assertTrue(res["accountEmailSent"])
+		sent = sendmail.call_args.kwargs
+		self.assertEqual([LEAD_EMAIL], sent["recipients"])
+		self.assertIn("set your password", sent["message"])
 		lead.reload()
 		self.assertEqual("Onboard", lead.status)
 		self.assertTrue(frappe.db.exists("GST User", LEAD_EMAIL))
@@ -255,8 +261,9 @@ class TestOnboardingApprovals(FrappeTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			register(token=invite.token, firstName="Reg", whatsappNumber="+919800000002", email="someone-else@example.com",
 			         practiceType="Firm", firmName="Reg & Co", clientCount=5)
-		res = register(token=invite.token, firstName="Reg", lastName="Tester", whatsappNumber="+919800000002",
-		               email=REG_EMAIL, practiceType="Firm", firmName="Reg & Co", clientCount=5)
+		with patch("frappe.sendmail"):
+			res = register(token=invite.token, firstName="Reg", lastName="Tester", whatsappNumber="+919800000002",
+			               email=REG_EMAIL, practiceType="Firm", firmName="Reg & Co", clientCount=5)
 		self.assertTrue(res["registered"])
 		with self.assertRaises(frappe.PermissionError):
 			register(token=invite.token, firstName="Reg", whatsappNumber="+919800000002", email=REG_EMAIL,
