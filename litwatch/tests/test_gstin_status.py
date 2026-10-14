@@ -56,6 +56,10 @@ class TestGstinStatus(FrappeTestCase):
 		as_staff()
 		cls.mock_before = frappe.db.get_single_value("Sync Settings", "mock_portal")
 		frappe.db.set_single_value("Sync Settings", "mock_portal", 1)
+		from litwatch import settings
+
+		cls.approval_before = settings.get("require_gstin_approval")
+		frappe.db.set_single_value("Sync Settings", "require_gstin_approval", 1)  # this test checks the approval flow
 		_cleanup()
 		cls.biz = str(frappe.get_doc({"doctype": "Business", "business_name": PREFIX + " Co"}).insert(ignore_permissions=True).name)
 		if not frappe.db.exists("User", CLIENT):
@@ -71,6 +75,7 @@ class TestGstinStatus(FrappeTestCase):
 		as_staff()
 		_cleanup()
 		frappe.db.set_single_value("Sync Settings", "mock_portal", cls.mock_before or 0)
+		frappe.db.set_single_value("Sync Settings", "require_gstin_approval", cls.approval_before or 0)
 		frappe.db.commit()
 		super().tearDownClass()
 

@@ -18,3 +18,4 @@ litwatch.patches.adaequare_settings_by_business
 litwatch.patches.adaequare_settings_fill_business_name
 litwatch.patches.gstin_ready_status
 litwatch.patches.onboarding_approvals_defaults
+litwatch.patches.onboarding_approvals_defaults #2026-10-14 read raw settings

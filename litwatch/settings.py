@@ -16,8 +16,17 @@ DEFAULTS = {
 }
 
 
+def raw(fieldname):
+	"""The stored value, or None when it was never saved. (frappe.db.get_single_value turns a missing
+	Check into 0, which would hide the default.)"""
+	row = frappe.db.sql(
+		"SELECT value FROM `tabSingles` WHERE doctype = 'Sync Settings' AND field = %s", fieldname
+	)
+	return row[0][0] if row else None
+
+
 def get(fieldname):
-	value = frappe.db.get_single_value("Sync Settings", fieldname)
+	value = raw(fieldname)
 	return DEFAULTS.get(fieldname) if value in (None, "") else value
 
 

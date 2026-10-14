@@ -18,8 +18,10 @@ def execute():
 		"default_reminder_days": "7,3,1",
 		"consent_expiry_days": 30,
 	}
+	from litwatch import settings
+
 	for field, value in defaults.items():
-		if frappe.db.get_single_value("Sync Settings", field) in (None, ""):
+		if settings.raw(field) in (None, ""):  # never saved (get_single_value would say 0 for a Check)
 			frappe.db.set_single_value("Sync Settings", field, value)
 	if frappe.db.has_column("GST User", "account_email_sent_on"):
 		frappe.db.sql(

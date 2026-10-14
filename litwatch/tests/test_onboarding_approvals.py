@@ -76,8 +76,12 @@ class TestOnboardingApprovals(FrappeTestCase):
 	def setUpClass(cls):
 		super().setUpClass()
 		as_staff()
-		cls.before = {f: frappe.db.get_single_value("Sync Settings", f) for f in SETTINGS}
+		from litwatch import settings
+
+		cls.before = {f: settings.get(f) for f in SETTINGS}  # effective values, defaults included
 		frappe.db.set_single_value("Sync Settings", "mock_portal", 1)
+		frappe.db.set_single_value("Sync Settings", "require_gstin_approval", 1)
+		frappe.db.set_single_value("Sync Settings", "send_account_email", 1)
 		_cleanup()
 		if not frappe.db.exists("User", CLIENT):
 			frappe.get_doc({"doctype": "User", "email": CLIENT, "first_name": "Approvals Client",
@@ -90,7 +94,7 @@ class TestOnboardingApprovals(FrappeTestCase):
 		as_staff()
 		_cleanup()
 		for f, v in cls.before.items():
-			frappe.db.set_single_value("Sync Settings", f, v)
+			frappe.db.set_single_value("Sync Settings", f, v or 0)
 		frappe.db.commit()
 		super().tearDownClass()
 
