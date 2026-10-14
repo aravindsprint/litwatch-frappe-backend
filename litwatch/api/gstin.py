@@ -70,7 +70,7 @@ def _activate(reg, otp=None):
 	if otp:
 		reg.portal_otp = str(otp).strip()  # sent with notice API calls while the session lasts
 	reg.save(ignore_permissions=True)
-	gst_portal.store_otp(reg.name, otp)  # also the "OTP" field of the GSTIN's Adaequare Settings
+	gst_portal.store_otp(reg.name, otp)  # also the "OTP" field of the Business's Adaequare Settings
 	if not otp:
 		from frappe.utils.password import remove_encrypted_password
 
@@ -393,7 +393,7 @@ def _sync_one(reg, sync_run=None):
 	"""Pull notices for one registration from the GST portal, store the new ones
 	as Notice records (with their PDFs attached) and write GST Sync Log.
 	Returns {seen, found, status}."""
-	# OTP: the GSTIN's Adaequare Settings "OTP" field first, else the one saved on the GSTIN
+	# OTP: the Business's Adaequare Settings "OTP" field first, else the one saved on the GSTIN
 	otp = gst_portal.saved_otp(reg.name) or (
 		reg.get_password("portal_otp", raise_exception=False) if reg.get("portal_otp") else None
 	)

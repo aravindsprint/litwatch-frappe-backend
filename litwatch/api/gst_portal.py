@@ -11,7 +11,7 @@ Endpoints used (from the Adaequare "GST notice retrieval" collection):
 Every taxpayer call sends: username, gstin, ret_period, requestid,
 Authorization: Bearer <token>, state-cd, otp (and form_typ for downloads).
 
-Configuration: Adaequare Settings (the record with "Is Active" ticked)
+Configuration: Adaequare Settings, one record per Business (named by the Business ID)
   client_id     -> gspappid
   client_secret -> gspappsecret
   base_url      -> GSP host (default https://gsp.adaequare.com)
@@ -79,37 +79,50 @@ def _check_cap():
 		)
 
 
-def _settings(gstin):
-	"""The GSTIN's own Adaequare Settings record (its GSP app: Client ID and Secret).
-	Every GSTIN has its own GSP credentials, so there is no fallback to another record."""
+def business_of(gstin):
+	"""Business ID that owns the GSTIN, or None."""
 	gstin = str(gstin or "").strip().upper()
-	name = gstin and frappe.db.get_value("Adaequare Settings", {"name": gstin, "is_active": 1}, "name")
-	if not name:
-		reason = _("is not active") if gstin and frappe.db.exists("Adaequare Settings", gstin) else _("does not exist")
+	owner = frappe.db.get_value("GSTIN", gstin, "business_id") if gstin else None
+	return str(owner) if owner else None
+
+
+def _settings(gstin):
+	"""The Adaequare Settings record of the Business that owns this GSTIN
+	(the business's GSP app: Client ID, Secret, cached token). No fallback to another business."""
+	gstin = str(gstin or "").strip().upper()
+	business = business_of(gstin)
+	if not business:
 		frappe.throw(
-			_("Adaequare Settings for GSTIN {0} {1}. Add it at /app/adaequare-settings with this GSTIN's GSP Client ID and Client Secret (and tick Is Active), or enable Mock GST Portal in Sync Settings for testing.").format(gstin or "-", reason),
+			_("GSTIN {0} is not linked to a Business. Add it to a Business first.").format(gstin or "-"),
+			PortalNotConfigured,
+		)
+	name = frappe.db.get_value("Adaequare Settings", {"name": business, "is_active": 1}, "name")
+	if not name:
+		reason = _("is not active") if frappe.db.exists("Adaequare Settings", business) else _("does not exist")
+		frappe.throw(
+			_("Adaequare Settings for Business {0} {1}. Add it at /app/adaequare-settings with the business's GSP Client ID and Client Secret (and tick Is Active), or enable Mock GST Portal in Sync Settings for testing.").format(business, reason),
 			PortalNotConfigured,
 		)
 	return frappe.get_doc("Adaequare Settings", name)
 
 
 # ---------------------------------------------------------------------------
-# OTP stored on the GSTIN's own Adaequare Settings record (field "OTP")
+# OTP stored on the Business's Adaequare Settings record (field "OTP")
 # ---------------------------------------------------------------------------
 def _own_record(gstin):
-	gstin = str(gstin or "").strip().upper()
-	return gstin if gstin and frappe.db.exists("Adaequare Settings", gstin) else None
+	business = business_of(gstin)
+	return business if business and frappe.db.exists("Adaequare Settings", business) else None
 
 
 def saved_otp(gstin):
-	"""OTP in the GSTIN's Adaequare Settings record, if any."""
+	"""OTP in the Adaequare Settings record of the GSTIN's Business, if any."""
 	name = _own_record(gstin)
 	otp = frappe.db.get_value("Adaequare Settings", name, "otp") if name else None
 	return str(otp).strip() if otp else None
 
 
 def store_otp(gstin, otp):
-	"""Save (or clear, with otp=None) the OTP on the GSTIN's Adaequare Settings record."""
+	"""Save (or clear, with otp=None) the OTP on the Adaequare Settings record of the GSTIN's Business."""
 	name = _own_record(gstin)
 	if name:
 		frappe.db.set_value("Adaequare Settings", name, "otp", str(otp).strip() if otp else None, update_modified=False)

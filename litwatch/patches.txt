@@ -14,3 +14,4 @@ litwatch.patches.rename_adaequare_settings_to_gstin
 litwatch.patches.adaequare_shared_record
 litwatch.patches.adaequare_settings_named_by_gstin
 litwatch.patches.gst_user_email_to_user_link
+litwatch.patches.adaequare_settings_by_business

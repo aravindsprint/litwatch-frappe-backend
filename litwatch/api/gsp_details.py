@@ -4,8 +4,8 @@ Everything stored for one GSTIN's GST portal connection, in one call.
 
 GET /api/method/litwatch.api.gsp_details.get_gstin_gsp_details?gstin=33AATCA0189J1ZD
 
-Returns the GSP app credentials (Client ID and Secret) from the GSTIN's
-Adaequare Settings record, the portal username, the current OTP, and the
+Returns the GSP app credentials (Client ID and Secret) from the Adaequare
+Settings record of the GSTIN's Business, the portal username, the current OTP, and the
 expiry dates (consent, GSP token, latest OTP request).
 
 Contains secrets: only System Manager may call it, and every call is logged.
@@ -51,7 +51,7 @@ def get_gstin_gsp_details(gstin=None):
 	  "stateCode": "33", "state": "Tamil Nadu", "city": null,
 	  "portalUserId": "arsupvtltd",
 	  "consent": "active", "consentValidUntil": "2027-10-10", "lastChecked": "...",
-	  "gsp": {"configured": true, "isActive": true, "clientId": "...", "clientSecret": "...",
+	  "gsp": {"configured": true, "settingsName": "32", "isActive": true, "clientId": "...", "clientSecret": "...",
 	          "accessToken": "eyJ...",
 	          "environment": "Live", "baseUrl": "https://gsp.adaequare.com",
 	          "tokenExpiresAt": "...", "tokenValid": true},
@@ -80,18 +80,20 @@ def get_gstin_gsp_details(gstin=None):
 		if reg.business_id and frappe.db.exists("Business", reg.business_id) else None
 	)
 
-	# GSP app (the GSTIN's own Adaequare Settings record)
+	# GSP app (the Adaequare Settings record of the GSTIN's Business)
 	gsp = {"configured": False}
 	settings_otp = None
-	if frappe.db.exists("Adaequare Settings", gstin):
-		s = frappe.get_doc("Adaequare Settings", gstin)
+	sname = str(reg.business_id) if reg.business_id else None
+	if sname and frappe.db.exists("Adaequare Settings", sname):
+		s = frappe.get_doc("Adaequare Settings", sname)
 		expires = s.get("token_expires_at")
 		gsp = {
 			"configured": True,
+			"settingsName": sname,
 			"isActive": bool(s.is_active),
 			"clientId": s.client_id,
-			"clientSecret": _password("Adaequare Settings", gstin, "client_secret"),
-			"accessToken": _password("Adaequare Settings", gstin, "access_token") if expires else None,
+			"clientSecret": _password("Adaequare Settings", sname, "client_secret"),
+			"accessToken": _password("Adaequare Settings", sname, "access_token") if expires else None,
 			"environment": s.get("environment"),
 			"baseUrl": s.get("base_url") or "https://gsp.adaequare.com",
 			"tokenExpiresAt": _iso(expires),

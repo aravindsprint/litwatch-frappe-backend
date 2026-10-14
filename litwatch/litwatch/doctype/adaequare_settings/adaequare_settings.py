@@ -7,11 +7,12 @@ from frappe.model.document import Document
 
 
 class AdaequareSettings(Document):
-	# Named by the GSTIN field (autoname "field:gstin")
+	# One record per Business (autoname "field:business"): the business's GSP app
+	# (Client ID, Secret, cached Access Token) and its latest portal OTP.
 
 	def validate(self):
-		if self.gstin:
-			self.gstin = self.gstin.strip().upper()
+		if self.business:
+			self.business = str(self.business).strip()
 		if self.otp:
 			self.otp = str(self.otp).strip()
 			if not self.otp.isdigit():

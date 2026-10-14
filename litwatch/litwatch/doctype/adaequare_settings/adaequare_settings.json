@@ -1,13 +1,14 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "field:gstin",
+ "autoname": "field:business",
  "creation": "2026-09-09 15:02:56.319701",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "gstin",
+  "business",
+  "business_name",
   "client_id",
   "client_secret",
   "environment",
@@ -19,16 +20,24 @@
  ],
  "fields": [
   {
-   "fieldname": "gstin",
+   "fieldname": "business",
    "fieldtype": "Link",
-   "options": "GSTIN",
-   "label": "GSTIN",
+   "options": "Business",
+   "label": "Business",
    "reqd": 1,
    "unique": 1,
    "in_list_view": 1,
    "in_standard_filter": 1,
    "set_only_once": 1,
-   "description": "The GSTIN this GSP app belongs to. The record is saved with this GSTIN as its name. Every GSTIN needs its own record."
+   "description": "The Business (client) this GSP app belongs to. The record is saved with the Business ID as its name. Every GSTIN of the business uses this app."
+  },
+  {
+   "fieldname": "business_name",
+   "fieldtype": "Data",
+   "label": "Business Name",
+   "read_only": 1,
+   "fetch_from": "business.business_name",
+   "in_list_view": 1
   },
   {
    "fieldname": "client_id",
@@ -36,7 +45,7 @@
    "in_list_view": 1,
    "label": "Client ID",
    "reqd": 1,
-   "description": "This GSTIN's GSP app id (gspappid)"
+   "description": "This business's GSP app id (gspappid)"
   },
   {
    "fieldname": "client_secret",
@@ -44,7 +53,7 @@
    "in_list_view": 1,
    "label": "Client Secret",
    "reqd": 1,
-   "description": "This GSTIN's GSP app secret (gspappsecret)"
+   "description": "This business's GSP app secret (gspappsecret)"
   },
   {
    "default": "Live",
@@ -64,7 +73,7 @@
    "fieldtype": "Data",
    "label": "OTP",
    "length": 10,
-   "description": "Latest GST portal OTP for this GSTIN. Filled automatically when the OTP is verified in LitWatch, cleared when the portal session ends. Sent as the otp header on notice calls."
+   "description": "Latest GST portal OTP for this business's GSTIN. Filled automatically when the OTP is verified in LitWatch, cleared when the portal session ends. Sent as the otp header on notice calls. If the business has several GSTINs, the last verified one wins."
   },
   {
    "fieldname": "base_url",
@@ -78,7 +87,7 @@
    "fieldtype": "Password",
    "label": "Access Token",
    "read_only": 1,
-   "description": "Cached GSP bearer token (filled automatically)"
+   "description": "Cached GSP bearer token for this business's app (filled automatically)"
   },
   {
    "fieldname": "token_expires_at",
@@ -90,7 +99,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-10 20:00:00.000000",
+ "modified": "2026-10-14 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Adaequare Settings",
@@ -115,5 +124,7 @@
  "sort_order": "DESC",
  "states": [],
  "naming_rule": "By fieldname",
- "title_field": "gstin"
+ "title_field": "business_name",
+ "search_fields": "business_name",
+ "show_title_field_in_link": 1
 }
