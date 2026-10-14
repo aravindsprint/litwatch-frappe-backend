@@ -28,6 +28,7 @@ def _cleanup():
 	for dt in ("GST Sync Log", "GST OTP Request"):
 		frappe.db.delete(dt, {"gstin": ["in", gstins]})
 	frappe.db.delete("Business GSTIN", {"gstin": ["in", gstins]})
+	frappe.db.delete("GSTIN User", {"parenttype": "GSTIN", "parent": ["in", gstins]})
 	frappe.db.delete("GSTIN", {"name": ["in", gstins]})
 	frappe.db.delete("GST User Business", {"parent": CLIENT_EMAIL})
 	frappe.db.delete("GST User", {"name": CLIENT_EMAIL})
@@ -137,6 +138,28 @@ class TestUserScoping(FrappeTestCase):
 		hub = get_command_hub()
 		ids = {r["id"] for r in hub["activeNotices"]["rows"]}
 		self.assertNotIn(self.notice_b, ids)
+
+	def test_get_businesses_gstin_details(self):
+		from litwatch.api.business import get_businesses
+
+		as_gst_user(None)
+		reg = frappe.get_doc("GSTIN", GSTIN_A)
+		reg.address = "1 Test Street, Tiruppur"
+		reg.portal_user_id = "scopeportal"
+		reg.set("users", [{"user": CLIENT_EMAIL}])
+		reg.save(ignore_permissions=True)
+
+		as_gst_user(CLIENT_EMAIL)
+		frappe.local.response = frappe._dict()
+		biz = [b for b in get_businesses() if b["businessId"] == str(self.biz_a)][0]
+		for key in ("businessId", "name", "pan", "sector", "status", "notices", "gstins"):
+			self.assertIn(key, biz)
+		g = [x for x in biz["gstins"] if x["gstin"] == GSTIN_A][0]
+		self.assertEqual("1 Test Street, Tiruppur", g["address"])
+		self.assertEqual("scopeportal", g["portalUserId"])
+		self.assertEqual([{"email": CLIENT_EMAIL, "name": "Scope Client"}], g["users"])
+		for key in ("gstin", "state", "consent"):
+			self.assertIn(key, g)
 
 	def test_new_business_is_linked_to_creator(self):
 		from litwatch.api.business import create_business

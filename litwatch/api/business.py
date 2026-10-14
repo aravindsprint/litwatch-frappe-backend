@@ -173,6 +173,29 @@ def add_gstin(businessId=None, gstin=None, address=None, portalUserId=None):
 # ---------------------------------------------------------------------------
 # GET litwatch.api.business.get_businesses
 # ---------------------------------------------------------------------------
+def _gstin_users(gstin_names):
+	"""{gstin: [{"email", "name"}]} from each GSTIN's Users table (GSTIN User -> GST User), in table order."""
+	if not gstin_names:
+		return {}
+	rows = frappe.get_all(
+		"GSTIN User",
+		filters={"parenttype": "GSTIN", "parentfield": "users", "parent": ["in", gstin_names]},
+		fields=["parent", "user"],
+		order_by="parent asc, idx asc",
+		limit_page_length=0,
+	)
+	emails = {r.user for r in rows if r.user}
+	names = (
+		dict(frappe.get_all("GST User", filters={"name": ["in", list(emails)]}, fields=["name", "user_name"], as_list=True))
+		if emails else {}
+	)
+	out = {}
+	for r in rows:
+		if r.user:
+			out.setdefault(r.parent, []).append({"email": r.user, "name": names.get(r.user) or None})
+	return out
+
+
 @frappe.whitelist(methods=["GET"])
 def get_businesses():
 	"""Every Business the caller may see (litwatch/scope.py) with its GSTINs and their consent status."""
@@ -189,13 +212,21 @@ def get_businesses():
 	gstins = frappe.get_all(
 		"GSTIN",
 		filters={"business_id": ["in", allowed]} if allowed is not None else None,
-		fields=["name", "business_id", "state", "consent_status"],
+		fields=["name", "business_id", "state", "consent_status", "address", "portal_user_id"],
 		limit_page_length=0,
 	)
+	users_by_gstin = _gstin_users([g.name for g in gstins])
 	by_business = {}
 	for g in gstins:
 		by_business.setdefault(str(g.business_id), []).append(
-			{"gstin": g.name, "state": g.state, "consent": g.consent_status or "inactive"}
+			{
+				"gstin": g.name,
+				"state": g.state,
+				"consent": g.consent_status or "inactive",
+				"address": g.address or None,
+				"portalUserId": g.portal_user_id or None,
+				"users": users_by_gstin.get(g.name, []),
+			}
 		)
 	notice_counts = dict(
 		frappe.db.sql(
