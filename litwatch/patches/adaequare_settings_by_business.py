@@ -22,7 +22,11 @@ def execute():
 		if frappe.db.exists("Adaequare Settings", business):
 			print(f"Adaequare Settings {row.name}: Business {business} already has a record, left as is - merge by hand")
 			continue
-		frappe.db.set_value("Adaequare Settings", row.name, "business", business, update_modified=False)
+		frappe.db.set_value(
+			"Adaequare Settings", row.name,
+			{"business": business, "business_name": frappe.db.get_value("Business", business, "business_name")},
+			update_modified=False,
+		)
 		rename_doc("Adaequare Settings", row.name, business, force=True, show_alert=False)
 		print(f"Adaequare Settings {row.name} -> Business {business}")
 	frappe.db.commit()

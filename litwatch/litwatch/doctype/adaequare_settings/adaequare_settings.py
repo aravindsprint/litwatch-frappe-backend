@@ -13,6 +13,7 @@ class AdaequareSettings(Document):
 	def validate(self):
 		if self.business:
 			self.business = str(self.business).strip()
+			self.business_name = frappe.db.get_value("Business", self.business, "business_name")
 		if self.otp:
 			self.otp = str(self.otp).strip()
 			if not self.otp.isdigit():
