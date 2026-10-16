@@ -1,0 +1,325 @@
+From dec76730be4ba3aadb31e6e5635d6b906f6ef265 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 16 Oct 2026 06:04:02 +0000
+Subject: [PATCH 1/2] Adaequare Settings OTP box: countdown timer and Resend
+ OTP
+
+Shows the time left on the OTP request (from its expires_at, measured
+against the server clock), turns orange under 3 minutes and red under 1,
+disables Verify when it runs out, and offers Resend OTP.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016uSTwic31grtwzMMK7rPAR
+---
+ .../adaequare_settings/adaequare_settings.js  | 68 ++++++++++++++++++-
+ 1 file changed, 65 insertions(+), 3 deletions(-)
+
+diff --git a/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.js b/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.js
+index f1f03b6..ae13a5d 100644
+--- a/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.js
++++ b/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.js
+@@ -154,27 +154,57 @@
+ 					return;
+ 				}
+ 				d.hide();
+-				otp_dialog(frm, values.gstin, req.name, req.otp_sent_to);
++				otp_dialog(frm, values.gstin, req.name, req.otp_sent_to, req.expires_at);
+ 			},
+ 		});
+ 		d.show();
+ 	}
+ 
+-	function otp_dialog(frm, gstin, otp_request_id, sent_to) {
++	async function otp_expiry(otp_request_id, expires_at) {
++		// Deadline in the browser's clock: the request's expires_at measured against the server's "now",
++		// so a wrong time zone or clock on the user's computer doesn't change the countdown.
++		if (!expires_at) {
++			const r = await frappe.db.get_value("GST OTP Request", otp_request_id, "expires_at");
++			expires_at = r && r.message && r.message.expires_at;
++		}
++		if (!expires_at) return Date.now() + 10 * 60 * 1000;
++		const left = frappe.datetime.str_to_obj(expires_at) - frappe.datetime.str_to_obj(frappe.datetime.now_datetime());
++		return Date.now() + Math.max(left, 0);
++	}
++
++	function resend(frm, gstin) {
++		frappe.call({
++			method: "litwatch.api.gstin.resend_gstin_otp",
++			args: { gstin },
++			freeze: true,
++			freeze_message: __("Requesting a new OTP..."),
++			callback: (r) => after_request(frm, gstin, r),
++		});
++	}
++
++	async function otp_dialog(frm, gstin, otp_request_id, sent_to, expires_at) {
++		const deadline = await otp_expiry(otp_request_id, expires_at);
++		let timer = null;
++
+ 		const d = new frappe.ui.Dialog({
+ 			title: __("Enter OTP for {0}", [gstin]),
+ 			fields: [
+ 				{
+ 					fieldtype: "HTML",
+-					options: `<p class="text-muted">${__("OTP sent to {0}. Request: {1}. It is valid for 10 minutes.", [
++					options: `<p class="text-muted">${__("OTP sent to {0}. Request: {1}.", [
+ 						frappe.utils.escape_html(sent_to || "-"),
+ 						frappe.utils.escape_html(otp_request_id),
+ 					])}</p>`,
+ 				},
++				{ fieldname: "countdown", fieldtype: "HTML" },
+ 				{ fieldname: "otp", fieldtype: "Data", label: __("OTP"), reqd: 1 },
+ 			],
+ 			primary_action_label: __("Verify"),
+ 			primary_action(values) {
++				if (Date.now() >= deadline) {
++					frappe.msgprint(__("This OTP has expired. Use Resend OTP to get a new one."));
++					return;
++				}
+ 				const otp = String(values.otp || "").trim();
+ 				if (!/^\d+$/.test(otp)) {
+ 					frappe.msgprint(__("OTP must be a number"));
+@@ -197,7 +227,39 @@
+ 					},
+ 				});
+ 			},
++			secondary_action_label: __("Resend OTP"),
++			secondary_action() {
++				d.hide();
++				resend(frm, gstin);
++			},
+ 		});
++
++		const box = d.fields_dict.countdown.$wrapper;
++		const tick = () => {
++			const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
++			if (left <= 0) {
++				clearInterval(timer);
++				box.html(
++					`<div class="alert alert-danger" style="margin-bottom:8px">${__(
++						"OTP expired. Use Resend OTP to get a new one."
++					)}</div>`
++				);
++				d.get_primary_btn().prop("disabled", true);
++				return;
++			}
++			const mm = String(Math.floor(left / 60)).padStart(2, "0");
++			const ss = String(left % 60).padStart(2, "0");
++			const colour = left <= 60 ? "var(--red-600, #c0392b)" : left <= 180 ? "var(--orange-600, #d35400)" : "var(--text-color)";
++			box.html(
++				`<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
++					<span class="text-muted">${__("Time left")}</span>
++					<span style="font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;color:${colour}">${mm}:${ss}</span>
++				</div>`
++			);
++		};
++		tick();
++		timer = setInterval(tick, 1000);
++		d.onhide = () => clearInterval(timer);
+ 		d.show();
+ 	}
+ 
+-- 
+2.43.0
+
+
+From af3946a32bbe89112f7b49d71ac9be83ea5d5ff7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 16 Oct 2026 06:27:57 +0000
+Subject: [PATCH 2/2] Expire unverified OTPs: GST OTP Request and waiting GSTIN
+ -> expired
+
+Every minute, pending OTP requests past expires_at become expired and a GSTIN
+still waiting for that OTP (pending, no other live request) becomes expired,
+with an "OTP expired" notification. A late verify does the same. Resend
+moves an expired GSTIN back to pending. Active GSTINs are never touched.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016uSTwic31grtwzMMK7rPAR
+---
+ litwatch/api/gstin.py                      | 50 +++++++++++++++++++++-
+ litwatch/gstin_status.py                   | 11 +++++
+ litwatch/hooks.py                          |  2 +
+ litwatch/litwatch/doctype/gstin/gstin.json |  4 +-
+ litwatch/tests/test_gstin_status.py        | 26 ++++++++++-
+ 5 files changed, 89 insertions(+), 4 deletions(-)
+
+diff --git a/litwatch/api/gstin.py b/litwatch/api/gstin.py
+index 703e92b..12a394e 100644
+--- a/litwatch/api/gstin.py
++++ b/litwatch/api/gstin.py
+@@ -279,7 +279,8 @@ def verify_gstin_otp(gstin=None, otpRequestId=None, otp=None):
+ 	):
+ 		if otp_req.status != "expired":
+ 			otp_req.db_set("status", "expired")
+-			frappe.db.commit()
++		_expire_gstin_if_waiting(gstin)
++		frappe.db.commit()
+ 		frappe.throw(_("OTP request {0} has expired. Please resend the OTP.").format(otpRequestId))
+ 
+ 	if not gst_portal.verify_otp(gstin, reg.portal_user_id, otp):
+@@ -313,12 +314,59 @@ def resend_gstin_otp(gstin=None):
+ 		_mark_verifying(reg)
+ 		otp_request_id = _new_otp_request(gstin, result["sent_to"], status="verified")
+ 	else:
++		if reg.consent_status != "active":
++			reg.consent_status = "pending"  # e.g. expired -> pending again
++			reg.save(ignore_permissions=True)
+ 		otp_request_id = _new_otp_request(gstin, result["sent_to"])
+ 	frappe.db.commit()
+ 
+ 	return _connection_result(reg, otp_request_id, result["sent_to"], not result["session_active"])
+ 
+ 
++# ---------------------------------------------------------------------------
++# OTP requests that ran out (scheduler, every minute; also on a late verify)
++# ---------------------------------------------------------------------------
++def _expire_gstin_if_waiting(gstin):
++	"""An OTP request ran out unverified: a GSTIN still waiting for that OTP (pending) becomes expired,
++	unless another OTP request for it is still live. Connected (active) GSTINs are not touched."""
++	if frappe.db.get_value("GSTIN", gstin, "consent_status") != "pending":
++		return False
++	live = frappe.db.exists(
++		"GST OTP Request", {"gstin": gstin, "status": "pending", "expires_at": [">", now_datetime()]}
++	)
++	if live:
++		return False
++	doc = frappe.get_doc("GSTIN", gstin)
++	doc.consent_status = "expired"
++	doc.flags.ignore_auto_status = True
++	doc.flags.otp_expired = True
++	doc.save(ignore_permissions=True)  # notifies "OTP expired" (litwatch/gstin_status.py)
++	return True
++
++
++def expire_otp_requests():
++	"""Mark pending OTP requests past expires_at as expired, and their waiting GSTINs as expired."""
++	stale = frappe.get_all(
++		"GST OTP Request",
++		filters={"status": "pending", "expires_at": ["<", now_datetime()]},
++		fields=["name", "gstin"],
++		limit_page_length=500,
++	)
++	if not stale:
++		return 0
++	frappe.db.sql(
++		"UPDATE `tabGST OTP Request` SET status = 'expired' WHERE name IN %(n)s", {"n": [r.name for r in stale]}
++	)
++	count = 0
++	for gstin in sorted({r.gstin for r in stale if r.gstin}):
++		try:
++			count += 1 if _expire_gstin_if_waiting(gstin) else 0
++		except Exception:
++			frappe.log_error(title=f"LitWatch OTP expiry failed for {gstin}", message=frappe.get_traceback())
++	frappe.db.commit()
++	return count
++
++
+ # ---------------------------------------------------------------------------
+ # 3.4b Approve / reject a verified connection (firm staff, in Frappe)
+ # ---------------------------------------------------------------------------
+diff --git a/litwatch/gstin_status.py b/litwatch/gstin_status.py
+index aa1712f..a9358a1 100644
+--- a/litwatch/gstin_status.py
++++ b/litwatch/gstin_status.py
+@@ -138,6 +138,17 @@ def notify_status_change(doc):
+ 			),
+ 			**(approval if old == "verifying" else ref),
+ 		)
++	elif new == "expired" and old == "pending":
++		notify(
++			gstin_recipients(doc.name, business_id),
++			_("OTP expired: {0}").format(doc.name),
++			_("The GST portal OTP for {0} ({1}) was not verified in time. Request a new OTP to connect it.").format(
++				doc.name, business_name
++			),
++			kind="sync",
++			client=business_id, reference_doctype="GSTIN", reference_name=doc.name,
++			include_actor=True,  # the person who asked for the OTP should hear it ran out
++		)
+ 	elif new == "expired" and old == "active":
+ 		notify(
+ 			gstin_recipients(doc.name, business_id),
+diff --git a/litwatch/hooks.py b/litwatch/hooks.py
+index b6ff75d..4279efb 100644
+--- a/litwatch/hooks.py
++++ b/litwatch/hooks.py
+@@ -318,5 +318,7 @@ scheduler_events = {
+ 	"cron": {
+ 		# 08:30 every day (system time zone): deadlines, consent expiry, morning digest
+ 		"30 8 * * *": ["litwatch.notification_jobs.run_daily"],
++		# every minute: unverified OTP requests past their 10 minutes -> expired (GSTIN pending -> expired)
++		"* * * * *": ["litwatch.api.gstin.expire_otp_requests"],
+ 	},
+ }
+diff --git a/litwatch/litwatch/doctype/gstin/gstin.json b/litwatch/litwatch/doctype/gstin/gstin.json
+index 571b97b..e1a0fd9 100644
+--- a/litwatch/litwatch/doctype/gstin/gstin.json
++++ b/litwatch/litwatch/doctype/gstin/gstin.json
+@@ -72,7 +72,7 @@
+    "default": "inactive",
+    "in_list_view": 1,
+    "in_standard_filter": 1,
+-   "description": "inactive: no GSP app for the business. ready: Adaequare Settings saved, can connect. pending: OTP sent. verifying: OTP verified, waiting for approval in Frappe. active: approved, syncing. expired: consent lapsed."
++   "description": "inactive: no GSP app for the business. ready: Adaequare Settings saved, can connect. pending: OTP sent (becomes expired if not verified within the OTP validity). verifying: OTP verified, waiting for approval in Frappe. active: approved, syncing. expired: OTP not verified in time, or consent lapsed; connect again. Set automatically; change by hand only to correct data."
+   },
+   {
+    "fieldname": "rejection_reason",
+@@ -103,7 +103,7 @@
+  "grid_page_length": 50,
+  "index_web_pages_for_search": 1,
+  "links": [],
+- "modified": "2026-10-14 18:00:00.000000",
++ "modified": "2026-10-16 12:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Litwatch",
+  "name": "GSTIN",
+diff --git a/litwatch/tests/test_gstin_status.py b/litwatch/tests/test_gstin_status.py
+index 21bbe3d..70361ab 100644
+--- a/litwatch/tests/test_gstin_status.py
++++ b/litwatch/tests/test_gstin_status.py
+@@ -11,12 +11,13 @@ from litwatch import scope
+ G1 = "33STATA0001A1Z1"
+ G2 = "33STATB0002B1Z2"
+ G3 = "33STATC0003C1Z3"
++G4 = "33STATD0004D1Z4"
+ CLIENT = "status-test-client@example.com"
+ PREFIX = "Status Test"
+ 
+ 
+ def _cleanup():
+-	gstins = [G1, G2, G3]
++	gstins = [G1, G2, G3, G4]
+ 	businesses = [str(b) for b in frappe.get_all("Business", filters={"business_name": ["like", PREFIX + "%"]}, pluck="name")]
+ 	frappe.db.delete("App Notification", {"reference_doctype": "GSTIN", "reference_name": ["in", gstins]})
+ 	for dt in ("GST Sync Log", "GST OTP Request"):
+@@ -174,3 +175,26 @@ class TestGstinStatus(FrappeTestCase):
+ 		self.assertEqual("inactive", self.status(G2))
+ 		frappe.get_doc({"doctype": "GSTIN", "gstin": G3, "business_id": self.biz}).insert(ignore_permissions=True)
+ 		self.assertEqual("inactive", self.status(G3))
++
++	def test_otp_expiry(self):
++		from frappe.utils import add_to_date, now_datetime
++
++		from litwatch.api.gstin import connect_gstin, expire_otp_requests, resend_gstin_otp
++
++		frappe.get_doc({"doctype": "GSTIN", "gstin": G4, "business_id": self.biz}).insert(ignore_permissions=True)
++		req = connect_gstin(gstin=G4, portalUserId="expiryuser")  # mock mode: allowed even when not set up
++		self.assertEqual("pending", self.status(G4))
++
++		# still within 10 minutes: nothing changes
++		expire_otp_requests()
++		self.assertEqual("pending", self.status(G4))
++
++		frappe.db.set_value("GST OTP Request", req["otpRequestId"], "expires_at", add_to_date(now_datetime(), minutes=-1))
++		expire_otp_requests()
++		self.assertEqual("expired", frappe.db.get_value("GST OTP Request", req["otpRequestId"], "status"))
++		self.assertEqual("expired", self.status(G4))
++		self.assertIn(f"OTP expired: {G4}", notes(CLIENT, G4))
++
++		# a new OTP puts it back to pending
++		resend_gstin_otp(gstin=G4)
++		self.assertEqual("pending", self.status(G4))
+-- 
+2.43.0
+
