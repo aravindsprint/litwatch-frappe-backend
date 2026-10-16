@@ -72,7 +72,7 @@
    "default": "inactive",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "description": "inactive: no GSP app for the business. ready: Adaequare Settings saved, can connect. pending: OTP sent. verifying: OTP verified, waiting for approval in Frappe. active: approved, syncing. expired: consent lapsed."
+   "description": "inactive: no GSP app for the business. ready: Adaequare Settings saved, can connect. pending: OTP sent (becomes expired if not verified within the OTP validity). verifying: OTP verified, waiting for approval in Frappe. active: approved, syncing. expired: OTP not verified in time, or consent lapsed; connect again. Set automatically; change by hand only to correct data."
   },
   {
    "fieldname": "rejection_reason",
@@ -103,7 +103,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-14 18:00:00.000000",
+ "modified": "2026-10-16 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "GSTIN",

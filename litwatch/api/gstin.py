@@ -279,7 +279,8 @@ def verify_gstin_otp(gstin=None, otpRequestId=None, otp=None):
 	):
 		if otp_req.status != "expired":
 			otp_req.db_set("status", "expired")
-			frappe.db.commit()
+		_expire_gstin_if_waiting(gstin)
+		frappe.db.commit()
 		frappe.throw(_("OTP request {0} has expired. Please resend the OTP.").format(otpRequestId))
 
 	if not gst_portal.verify_otp(gstin, reg.portal_user_id, otp):
@@ -313,10 +314,57 @@ def resend_gstin_otp(gstin=None):
 		_mark_verifying(reg)
 		otp_request_id = _new_otp_request(gstin, result["sent_to"], status="verified")
 	else:
+		if reg.consent_status != "active":
+			reg.consent_status = "pending"  # e.g. expired -> pending again
+			reg.save(ignore_permissions=True)
 		otp_request_id = _new_otp_request(gstin, result["sent_to"])
 	frappe.db.commit()
 
 	return _connection_result(reg, otp_request_id, result["sent_to"], not result["session_active"])
+
+
+# ---------------------------------------------------------------------------
+# OTP requests that ran out (scheduler, every minute; also on a late verify)
+# ---------------------------------------------------------------------------
+def _expire_gstin_if_waiting(gstin):
+	"""An OTP request ran out unverified: a GSTIN still waiting for that OTP (pending) becomes expired,
+	unless another OTP request for it is still live. Connected (active) GSTINs are not touched."""
+	if frappe.db.get_value("GSTIN", gstin, "consent_status") != "pending":
+		return False
+	live = frappe.db.exists(
+		"GST OTP Request", {"gstin": gstin, "status": "pending", "expires_at": [">", now_datetime()]}
+	)
+	if live:
+		return False
+	doc = frappe.get_doc("GSTIN", gstin)
+	doc.consent_status = "expired"
+	doc.flags.ignore_auto_status = True
+	doc.flags.otp_expired = True
+	doc.save(ignore_permissions=True)  # notifies "OTP expired" (litwatch/gstin_status.py)
+	return True
+
+
+def expire_otp_requests():
+	"""Mark pending OTP requests past expires_at as expired, and their waiting GSTINs as expired."""
+	stale = frappe.get_all(
+		"GST OTP Request",
+		filters={"status": "pending", "expires_at": ["<", now_datetime()]},
+		fields=["name", "gstin"],
+		limit_page_length=500,
+	)
+	if not stale:
+		return 0
+	frappe.db.sql(
+		"UPDATE `tabGST OTP Request` SET status = 'expired' WHERE name IN %(n)s", {"n": [r.name for r in stale]}
+	)
+	count = 0
+	for gstin in sorted({r.gstin for r in stale if r.gstin}):
+		try:
+			count += 1 if _expire_gstin_if_waiting(gstin) else 0
+		except Exception:
+			frappe.log_error(title=f"LitWatch OTP expiry failed for {gstin}", message=frappe.get_traceback())
+	frappe.db.commit()
+	return count
 
 
 # ---------------------------------------------------------------------------

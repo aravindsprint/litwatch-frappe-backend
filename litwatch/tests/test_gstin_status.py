@@ -11,12 +11,13 @@ from litwatch import scope
 G1 = "33STATA0001A1Z1"
 G2 = "33STATB0002B1Z2"
 G3 = "33STATC0003C1Z3"
+G4 = "33STATD0004D1Z4"
 CLIENT = "status-test-client@example.com"
 PREFIX = "Status Test"
 
 
 def _cleanup():
-	gstins = [G1, G2, G3]
+	gstins = [G1, G2, G3, G4]
 	businesses = [str(b) for b in frappe.get_all("Business", filters={"business_name": ["like", PREFIX + "%"]}, pluck="name")]
 	frappe.db.delete("App Notification", {"reference_doctype": "GSTIN", "reference_name": ["in", gstins]})
 	for dt in ("GST Sync Log", "GST OTP Request"):
@@ -174,3 +175,26 @@ class TestGstinStatus(FrappeTestCase):
 		self.assertEqual("inactive", self.status(G2))
 		frappe.get_doc({"doctype": "GSTIN", "gstin": G3, "business_id": self.biz}).insert(ignore_permissions=True)
 		self.assertEqual("inactive", self.status(G3))
+
+	def test_otp_expiry(self):
+		from frappe.utils import add_to_date, now_datetime
+
+		from litwatch.api.gstin import connect_gstin, expire_otp_requests, resend_gstin_otp
+
+		frappe.get_doc({"doctype": "GSTIN", "gstin": G4, "business_id": self.biz}).insert(ignore_permissions=True)
+		req = connect_gstin(gstin=G4, portalUserId="expiryuser")  # mock mode: allowed even when not set up
+		self.assertEqual("pending", self.status(G4))
+
+		# still within 10 minutes: nothing changes
+		expire_otp_requests()
+		self.assertEqual("pending", self.status(G4))
+
+		frappe.db.set_value("GST OTP Request", req["otpRequestId"], "expires_at", add_to_date(now_datetime(), minutes=-1))
+		expire_otp_requests()
+		self.assertEqual("expired", frappe.db.get_value("GST OTP Request", req["otpRequestId"], "status"))
+		self.assertEqual("expired", self.status(G4))
+		self.assertIn(f"OTP expired: {G4}", notes(CLIENT, G4))
+
+		# a new OTP puts it back to pending
+		resend_gstin_otp(gstin=G4)
+		self.assertEqual("pending", self.status(G4))

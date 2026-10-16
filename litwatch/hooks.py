@@ -318,5 +318,7 @@ scheduler_events = {
 	"cron": {
 		# 08:30 every day (system time zone): deadlines, consent expiry, morning digest
 		"30 8 * * *": ["litwatch.notification_jobs.run_daily"],
+		# every minute: unverified OTP requests past their 10 minutes -> expired (GSTIN pending -> expired)
+		"* * * * *": ["litwatch.api.gstin.expire_otp_requests"],
 	},
 }

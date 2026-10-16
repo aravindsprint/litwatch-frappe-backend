@@ -138,6 +138,17 @@ def notify_status_change(doc):
 			),
 			**(approval if old == "verifying" else ref),
 		)
+	elif new == "expired" and old == "pending":
+		notify(
+			gstin_recipients(doc.name, business_id),
+			_("OTP expired: {0}").format(doc.name),
+			_("The GST portal OTP for {0} ({1}) was not verified in time. Request a new OTP to connect it.").format(
+				doc.name, business_name
+			),
+			kind="sync",
+			client=business_id, reference_doctype="GSTIN", reference_name=doc.name,
+			include_actor=True,  # the person who asked for the OTP should hear it ran out
+		)
 	elif new == "expired" and old == "active":
 		notify(
 			gstin_recipients(doc.name, business_id),
