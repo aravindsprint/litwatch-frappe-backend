@@ -132,7 +132,64 @@ def _connection_result(reg, otp_request_id=None, sent_to=None, otp_required=None
 	}
 	if otp_request_id is not None:
 		out.update({"otpRequestId": otp_request_id, "otpSentTo": sent_to, "otpRequired": otp_required})
+		out.update(_otp_timer(otp_request_id) if otp_required else {"expiresAt": None, "expiresInSeconds": 0})
 	return out
+
+
+def _otp_timer(otp_request_id):
+	"""When the OTP request runs out: for the frontend's countdown."""
+	expires = frappe.db.get_value("GST OTP Request", otp_request_id, "expires_at") if otp_request_id else None
+	if not expires:
+		return {"expiresAt": None, "expiresInSeconds": 0}
+	left = int((get_datetime(expires) - now_datetime()).total_seconds())
+	return {"expiresAt": _local(expires), "expiresInSeconds": max(left, 0)}
+
+
+def _local(dt):
+	"""Site time zone (Asia/Kolkata), no "Z": for countdowns use expiresInSeconds, not the clock."""
+	return get_datetime(dt).replace(microsecond=0).isoformat() if dt else None
+
+
+# ---------------------------------------------------------------------------
+# 3.4a GET get_gstin_otp_status?gstin=   (OTP timer / polling)
+# ---------------------------------------------------------------------------
+@frappe.whitelist(methods=["GET"])
+def get_gstin_otp_status(gstin=None):
+	"""The GSTIN's connection status and its latest OTP request, for the OTP countdown and for polling
+	after verify (verifying -> active once approved). An OTP request past its time is reported (and
+	saved) as expired."""
+	gstin = str(gstin or _pick(_request_params(), "gstin") or "").strip().upper()
+	reg = _get_registration(gstin, ptype="read")
+	latest = frappe.get_all(
+		"GST OTP Request",
+		filters={"gstin": gstin},
+		fields=["name", "status", "otp_sent_to", "requested_at", "expires_at"],
+		order_by="creation desc",
+		limit=1,
+	)
+	latest = latest[0] if latest else None
+	if latest and latest.status == "pending" and latest.expires_at and get_datetime(latest.expires_at) <= now_datetime():
+		frappe.db.set_value("GST OTP Request", latest.name, "status", "expired", update_modified=False)
+		latest.status = "expired"
+		_expire_gstin_if_waiting(gstin)
+		frappe.db.commit()
+		reg.reload()
+	timer = _otp_timer(latest.name) if latest and latest.status == "pending" else {"expiresAt": _local(latest.expires_at) if latest else None, "expiresInSeconds": 0}
+	consent = reg.consent_status or "inactive"
+	return {
+		"gstin": gstin,
+		"consent": consent,
+		"validUntil": str(reg.valid_until) if reg.valid_until else None,
+		"otpRequestId": latest.name if latest else None,
+		"otpStatus": latest.status if latest else None,
+		"otpSentTo": latest.otp_sent_to if latest else None,
+		"requestedAt": _local(latest.requested_at) if latest else None,
+		**timer,
+		"otpValidityMinutes": gst_portal.otp_validity_minutes(),
+		"canVerify": bool(latest and latest.status == "pending" and timer["expiresInSeconds"] > 0),
+		"canRequestOtp": consent in ("ready", "pending", "expired", "active") or (consent == "inactive" and gst_portal.is_mock()),
+		"rejectionReason": reg.get("rejection_reason") or None,
+	}
 
 
 def _new_otp_request(gstin, otp_sent_to, status="pending"):

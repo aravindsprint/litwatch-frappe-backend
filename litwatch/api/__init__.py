@@ -8,6 +8,7 @@ from litwatch.api.clients import create_client, set_active_client  # noqa: F401 
 from litwatch.api.gstin import (  # noqa: F401
 	connect_gstin,
 	get_gstin_connections,
+	get_gstin_otp_status,
 	get_sync_log,
 	get_sync_usage,
 	resend_gstin_otp,

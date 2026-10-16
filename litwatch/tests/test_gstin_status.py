@@ -179,17 +179,23 @@ class TestGstinStatus(FrappeTestCase):
 	def test_otp_expiry(self):
 		from frappe.utils import add_to_date, now_datetime
 
-		from litwatch.api.gstin import connect_gstin, expire_otp_requests, resend_gstin_otp
+		from litwatch.api.gstin import connect_gstin, expire_otp_requests, get_gstin_otp_status, resend_gstin_otp
 
 		frappe.get_doc({"doctype": "GSTIN", "gstin": G4, "business_id": self.biz}).insert(ignore_permissions=True)
 		req = connect_gstin(gstin=G4, portalUserId="expiryuser")  # mock mode: allowed even when not set up
 		self.assertEqual("pending", self.status(G4))
+		self.assertTrue(req["expiresAt"])
+		self.assertTrue(500 < req["expiresInSeconds"] <= 600)
+		st = get_gstin_otp_status(gstin=G4)
+		self.assertEqual(("pending", "pending", True), (st["consent"], st["otpStatus"], st["canVerify"]))
 
 		# still within 10 minutes: nothing changes
 		expire_otp_requests()
 		self.assertEqual("pending", self.status(G4))
 
 		frappe.db.set_value("GST OTP Request", req["otpRequestId"], "expires_at", add_to_date(now_datetime(), minutes=-1))
+		st = get_gstin_otp_status(gstin=G4)  # reading it also expires it
+		self.assertEqual(("expired", "expired", False, 0), (st["consent"], st["otpStatus"], st["canVerify"], st["expiresInSeconds"]))
 		expire_otp_requests()
 		self.assertEqual("expired", frappe.db.get_value("GST OTP Request", req["otpRequestId"], "status"))
 		self.assertEqual("expired", self.status(G4))
