@@ -1,0 +1,123 @@
+From dec76730be4ba3aadb31e6e5635d6b906f6ef265 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 16 Oct 2026 06:04:02 +0000
+Subject: [PATCH] Adaequare Settings OTP box: countdown timer and Resend OTP
+
+Shows the time left on the OTP request (from its expires_at, measured
+against the server clock), turns orange under 3 minutes and red under 1,
+disables Verify when it runs out, and offers Resend OTP.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016uSTwic31grtwzMMK7rPAR
+---
+ .../adaequare_settings/adaequare_settings.js  | 68 ++++++++++++++++++-
+ 1 file changed, 65 insertions(+), 3 deletions(-)
+
+diff --git a/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.js b/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.js
+index f1f03b6..ae13a5d 100644
+--- a/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.js
++++ b/litwatch/litwatch/doctype/adaequare_settings/adaequare_settings.js
+@@ -154,27 +154,57 @@
+ 					return;
+ 				}
+ 				d.hide();
+-				otp_dialog(frm, values.gstin, req.name, req.otp_sent_to);
++				otp_dialog(frm, values.gstin, req.name, req.otp_sent_to, req.expires_at);
+ 			},
+ 		});
+ 		d.show();
+ 	}
+ 
+-	function otp_dialog(frm, gstin, otp_request_id, sent_to) {
++	async function otp_expiry(otp_request_id, expires_at) {
++		// Deadline in the browser's clock: the request's expires_at measured against the server's "now",
++		// so a wrong time zone or clock on the user's computer doesn't change the countdown.
++		if (!expires_at) {
++			const r = await frappe.db.get_value("GST OTP Request", otp_request_id, "expires_at");
++			expires_at = r && r.message && r.message.expires_at;
++		}
++		if (!expires_at) return Date.now() + 10 * 60 * 1000;
++		const left = frappe.datetime.str_to_obj(expires_at) - frappe.datetime.str_to_obj(frappe.datetime.now_datetime());
++		return Date.now() + Math.max(left, 0);
++	}
++
++	function resend(frm, gstin) {
++		frappe.call({
++			method: "litwatch.api.gstin.resend_gstin_otp",
++			args: { gstin },
++			freeze: true,
++			freeze_message: __("Requesting a new OTP..."),
++			callback: (r) => after_request(frm, gstin, r),
++		});
++	}
++
++	async function otp_dialog(frm, gstin, otp_request_id, sent_to, expires_at) {
++		const deadline = await otp_expiry(otp_request_id, expires_at);
++		let timer = null;
++
+ 		const d = new frappe.ui.Dialog({
+ 			title: __("Enter OTP for {0}", [gstin]),
+ 			fields: [
+ 				{
+ 					fieldtype: "HTML",
+-					options: `<p class="text-muted">${__("OTP sent to {0}. Request: {1}. It is valid for 10 minutes.", [
++					options: `<p class="text-muted">${__("OTP sent to {0}. Request: {1}.", [
+ 						frappe.utils.escape_html(sent_to || "-"),
+ 						frappe.utils.escape_html(otp_request_id),
+ 					])}</p>`,
+ 				},
++				{ fieldname: "countdown", fieldtype: "HTML" },
+ 				{ fieldname: "otp", fieldtype: "Data", label: __("OTP"), reqd: 1 },
+ 			],
+ 			primary_action_label: __("Verify"),
+ 			primary_action(values) {
++				if (Date.now() >= deadline) {
++					frappe.msgprint(__("This OTP has expired. Use Resend OTP to get a new one."));
++					return;
++				}
+ 				const otp = String(values.otp || "").trim();
+ 				if (!/^\d+$/.test(otp)) {
+ 					frappe.msgprint(__("OTP must be a number"));
+@@ -197,7 +227,39 @@
+ 					},
+ 				});
+ 			},
++			secondary_action_label: __("Resend OTP"),
++			secondary_action() {
++				d.hide();
++				resend(frm, gstin);
++			},
+ 		});
++
++		const box = d.fields_dict.countdown.$wrapper;
++		const tick = () => {
++			const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
++			if (left <= 0) {
++				clearInterval(timer);
++				box.html(
++					`<div class="alert alert-danger" style="margin-bottom:8px">${__(
++						"OTP expired. Use Resend OTP to get a new one."
++					)}</div>`
++				);
++				d.get_primary_btn().prop("disabled", true);
++				return;
++			}
++			const mm = String(Math.floor(left / 60)).padStart(2, "0");
++			const ss = String(left % 60).padStart(2, "0");
++			const colour = left <= 60 ? "var(--red-600, #c0392b)" : left <= 180 ? "var(--orange-600, #d35400)" : "var(--text-color)";
++			box.html(
++				`<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
++					<span class="text-muted">${__("Time left")}</span>
++					<span style="font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;color:${colour}">${mm}:${ss}</span>
++				</div>`
++			);
++		};
++		tick();
++		timer = setInterval(tick, 1000);
++		d.onhide = () => clearInterval(timer);
+ 		d.show();
+ 	}
+ 
+-- 
+2.43.0
+
