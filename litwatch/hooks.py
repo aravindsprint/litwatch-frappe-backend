@@ -198,7 +198,10 @@ app_license = "mit"
 # Ignore links to specified DocTypes when deleting documents
 # -----------------------------------------------------------
 
-# ignore_links_on_delete = ["Communication", "ToDo"]
+# Audit Log entries are permanent history and App Notifications are just messages: neither
+# should stop a Notice, Payment or Business from being deleted. The entries stay, pointing
+# at the deleted name.
+ignore_links_on_delete = ["Audit Log", "App Notification"]
 
 # Request Events
 # ----------------
