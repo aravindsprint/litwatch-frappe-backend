@@ -99,7 +99,7 @@ def register(token=None, firstName=None, lastName=None, whatsappNumber=None, ema
 	})
 	lead.save(ignore_permissions=True) if not lead.is_new() else lead.insert(ignore_permissions=True)
 
-	create_account(email, first, last, phone)
+	create_account(email, first, last, phone, user_type="Consultant")  # CA practices and firms
 
 	lead.db_set({"user": email, "status": "Onboard", "converted_on": now_datetime()})
 	invite.db_set({"status": "Used", "registered_user": email, "registered_on": now_datetime(), "lead": lead.name})

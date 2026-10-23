@@ -223,9 +223,12 @@ def get_gstin_connections():
 	allowed = scope.get_scope()
 	if allowed is not None and not allowed:
 		return []
+	gstin_filters = {"business_id": ["in", allowed]} if allowed is not None else {}
+	if scope.gstin_filter():
+		gstin_filters["name"] = scope.gstin_filter()  # Individual: only their own GSTINs
 	gstins = frappe.get_all(
 		"GSTIN",
-		filters={"business_id": ["in", allowed]} if allowed is not None else None,
+		filters=gstin_filters or None,
 		fields=["name", "city", "state", "business_id", "consent_status", "valid_until", "last_checked"],
 		order_by="modified desc",
 		limit_page_length=0,
@@ -738,6 +741,8 @@ def run_all_gstin_sync():
 	allowed = scope.get_scope()
 	if allowed is not None:
 		filters["business_id"] = ["in", allowed or ["__none__"]]
+	if scope.gstin_filter():
+		filters["name"] = scope.gstin_filter()  # Individual: only their own GSTINs
 	gstins = [
 		g
 		for g in frappe.get_all("GSTIN", filters=filters, pluck="name", limit_page_length=0)

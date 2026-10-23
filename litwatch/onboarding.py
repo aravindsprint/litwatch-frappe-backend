@@ -68,7 +68,7 @@ def send_account_email(email, force=False):
 		return False
 
 
-def create_account(email, first_name, last_name=None, mobile=None):
+def create_account(email, first_name, last_name=None, mobile=None, user_type="Individual"):
 	"""User (Website User, no Frappe welcome email) + GST User. The GST User's after_insert sends the
 	account email and the welcome notification. Returns the email."""
 	email = str(email or "").strip().lower()
@@ -91,7 +91,8 @@ def create_account(email, first_name, last_name=None, mobile=None):
 		user.insert()
 	if not frappe.db.exists("GST User", email):
 		full = " ".join(p for p in [(first_name or "").strip(), (last_name or "").strip()] if p) or None
-		frappe.get_doc({"doctype": "GST User", "user_email_id": email, "user_name": full}).insert(ignore_permissions=True)
+		frappe.get_doc({"doctype": "GST User", "user_email_id": email, "user_name": full,
+		                "user_type": user_type}).insert(ignore_permissions=True)
 	return email
 
 
@@ -107,7 +108,8 @@ def convert_lead(lead=None):
 		frappe.throw(_("Lead {0} is already converted to User {1}").format(doc.name, doc.user))
 	if not doc.email:
 		frappe.throw(_("Lead {0} has no Email ID").format(doc.name))
-	email = create_account(doc.email, doc.first_name, doc.last_name, doc.whatsapp_number)
+	# leads are CA practices / firms: they manage their clients' businesses
+	email = create_account(doc.email, doc.first_name, doc.last_name, doc.whatsapp_number, user_type="Consultant")
 	doc.user = email
 	doc.status = "Onboard"
 	doc.converted_on = now_datetime()

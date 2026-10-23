@@ -108,6 +108,10 @@ def _headers():
 	if gst_user:
 		headers["X-LitWatch-GST-User"] = gst_user
 		headers["X-LitWatch-Businesses"] = ",".join(allowed or [])
+		mine = scope.get_gstin_scope()
+		headers["X-LitWatch-User-Type"] = scope.INDIVIDUAL if mine is not None else scope.CONSULTANT
+		if mine is not None:
+			headers["X-LitWatch-GSTINs"] = ",".join(mine)
 	secret = _conf("ai_layer_secret")
 	if secret:
 		headers["X-AI-Layer-Secret"] = secret

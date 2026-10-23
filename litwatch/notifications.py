@@ -82,18 +82,24 @@ def notify(users, title, detail=None, kind="system", client=None, reference_doct
 # ---------------------------------------------------------------------------
 # Recipients
 # ---------------------------------------------------------------------------
-def business_users(business_id):
-	"""GST Users (emails) linked to the Business in their Business ID table."""
+def business_users(business_id, gstin=None):
+	"""GST Users (emails) linked to the Business in their Business ID table. Individuals only when
+	the record is theirs to see: of one of their GSTINs, or (no GSTIN) a Business they can see."""
 	if not business_id:
 		return []
-	return sorted(
-		set(
-			frappe.get_all(
-				"GST User Business",
-				filters={"parenttype": "GST User", "business": str(business_id)},
-				pluck="parent",
-			)
+	from litwatch.scope import CONSULTANT, user_can_see
+
+	users = set(
+		frappe.get_all(
+			"GST User Business",
+			filters={"parenttype": "GST User", "business": str(business_id)},
+			pluck="parent",
 		)
+	)
+	types = dict(frappe.get_all("GST User", filters={"name": ["in", list(users) or ["__none__"]]},
+	                            fields=["name", "user_type"], as_list=True))
+	return sorted(
+		u for u in users if types.get(u) == CONSULTANT or user_can_see(u, business_id, gstin)
 	)
 
 
@@ -116,7 +122,7 @@ def gstin_users(gstin):
 def gstin_recipients(gstin, business_id=None):
 	"""The Business's GST Users plus the GSTIN's own users, without duplicates."""
 	out = []
-	for u in business_users(business_id) + gstin_users(gstin):
+	for u in business_users(business_id, gstin) + gstin_users(gstin):
 		if u not in out:
 			out.append(u)
 	return out

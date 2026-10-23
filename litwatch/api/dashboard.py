@@ -450,6 +450,9 @@ def get_command_hub(client_key=None, gstin=None, months=12, priority_limit=5, as
 	if gstin:
 		scope.check_gstin(gstin)
 		filters.append(["gstin", "=", str(gstin).strip().upper()])
+	visible = scope.visible_notices()
+	if visible is not None:  # Individual: notices of their own GSTINs (and business-level ones)
+		filters.append(["name", "in", visible or ["__none__"]])
 
 	rows = frappe.get_all("Notice", filters=filters, or_filters=or_filters, fields=fields,
 	                      limit_page_length=0, order_by="creation asc")

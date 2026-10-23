@@ -65,7 +65,7 @@ class TestUserScoping(FrappeTestCase):
 		if not frappe.db.exists("User", CLIENT_EMAIL):
 			frappe.get_doc({"doctype": "User", "email": CLIENT_EMAIL, "first_name": "Scope Client",
 			                "user_type": "Website User", "send_welcome_email": 0}).insert(ignore_permissions=True)
-		frappe.get_doc({"doctype": "GST User", "user_email_id": CLIENT_EMAIL, "user_name": "Scope Client",
+		frappe.get_doc({"doctype": "GST User", "user_email_id": CLIENT_EMAIL, "user_name": "Scope Client", "user_type": "Consultant",
 		                "businesses": [{"business": str(cls.biz_a)}]}).insert(ignore_permissions=True)
 
 	@classmethod

@@ -111,6 +111,9 @@ def get_client_notices(
 
 	business_gstins = frappe.get_all("GSTIN", filters={"business_id": business_id}, pluck="name") \
 		if frappe.db.table_exists("GSTIN") else []
+	mine = scope.get_gstin_scope()
+	if mine is not None:  # Individual: only their own GSTINs of this business
+		business_gstins = [g for g in business_gstins if g in mine]
 
 	if gstin:
 		gstin = str(gstin).strip().upper()
@@ -123,6 +126,9 @@ def get_client_notices(
 		or_filters.append(["gstin", "in", business_gstins])
 
 	filters = []
+	visible = scope.visible_notices()
+	if visible is not None:
+		filters.append(["name", "in", visible or ["__none__"]])
 	if gstin and has("gstin"):
 		filters.append(["gstin", "=", gstin])
 	if proceeding_stage and has("proceeding_stage"):

@@ -88,7 +88,8 @@ def get_clients(gstUser=None):
 		return []
 
 	gstins = frappe.get_all(
-		"GSTIN", fields=["name", "business_id", "state", "consent_status"], limit_page_length=0
+		"GSTIN", filters={"name": scope.gstin_filter()} if scope.gstin_filter() else None,
+		fields=["name", "business_id", "state", "consent_status"], limit_page_length=0
 	)
 	regs_by_business = {}
 	for g in gstins:
@@ -101,20 +102,33 @@ def get_clients(gstUser=None):
 	window_start = get_first_day(months[0])
 	window_end = get_last_day(months[-1])
 
-	counts = dict(
-		frappe.db.sql(
-			"""SELECT business_id, COUNT(*) FROM `tabNotice`
-			WHERE IFNULL(business_id, '') != '' GROUP BY business_id"""
+	visible = scope.visible_notices()  # Individual: only notices of their own GSTINs
+	if visible is None:
+		counts = dict(
+			frappe.db.sql(
+				"""SELECT business_id, COUNT(*) FROM `tabNotice`
+				WHERE IFNULL(business_id, '') != '' GROUP BY business_id"""
+			)
 		)
-	)
+		monthly_rows = frappe.db.sql(
+			"""SELECT business_id, DATE_FORMAT(creation, '%%Y-%%m'), COUNT(*) FROM `tabNotice`
+			WHERE IFNULL(business_id, '') != '' AND creation BETWEEN %s AND %s
+			GROUP BY business_id, DATE_FORMAT(creation, '%%Y-%%m')""",
+			(f"{window_start} 00:00:00", f"{window_end} 23:59:59"),
+		)
+	else:
+		counts, monthly_rows = scope.notice_counts(), []
+		for r in frappe.get_all(
+			"Notice",
+			filters={"name": ["in", visible or ["__none__"]], "business_id": ["is", "set"],
+			         "creation": ["between", [f"{window_start} 00:00:00", f"{window_end} 23:59:59"]]},
+			fields=["business_id", "creation"],
+			limit_page_length=0,
+		):
+			monthly_rows.append((r.business_id, r.creation.strftime("%Y-%m"), 1))
 	monthly = {}
-	for business_id, ym, n in frappe.db.sql(
-		"""SELECT business_id, DATE_FORMAT(creation, '%%Y-%%m'), COUNT(*) FROM `tabNotice`
-		WHERE IFNULL(business_id, '') != '' AND creation BETWEEN %s AND %s
-		GROUP BY business_id, DATE_FORMAT(creation, '%%Y-%%m')""",
-		(f"{window_start} 00:00:00", f"{window_end} 23:59:59"),
-	):
-		monthly[(str(business_id), ym)] = n
+	for business_id, ym, n in monthly_rows:
+		monthly[(str(business_id), ym)] = monthly.get((str(business_id), ym), 0) + n
 
 	result = []
 	for b in businesses:
@@ -225,6 +239,11 @@ def get_client_pipeline():
 			WHERE IFNULL(business_id, '') != '' GROUP BY business_id"""
 		)
 	)
+	if scope.gstin_filter():  # Individual: count only their own GSTINs
+		gstin_counts = {}
+		for b in frappe.get_all("GSTIN", filters={"name": scope.gstin_filter()}, pluck="business_id"):
+			if b:
+				gstin_counts[b] = gstin_counts.get(b, 0) + 1
 
 	result = []
 	for b in businesses:

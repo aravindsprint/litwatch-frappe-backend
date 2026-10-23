@@ -60,7 +60,7 @@ def notice_after_insert(doc, method=None):
 		return  # a sync sends one summary notification instead (litwatch.api.gstin)
 	business_id = notice_business(doc)
 	notify(
-		business_users(business_id),
+		business_users(business_id, doc.get("gstin")),
 		_("New notice {0}").format(doc.name),
 		_("A notice was added for {0}{1}.").format(
 			business_name(business_id), f" (GSTIN {doc.gstin})" if doc.get("gstin") else ""
@@ -75,7 +75,7 @@ def notice_on_update(doc, method=None):
 	if not before:
 		return
 	business_id = notice_business(doc)
-	users = business_users(business_id)
+	users = business_users(business_id, doc.get("gstin"))
 	if _norm_json(doc.get("analysis")) and not _norm_json(before.get("analysis")):
 		notify(
 			users,
@@ -118,7 +118,7 @@ def payment_after_insert(doc, method=None):
 	business_id = str(doc.client) if doc.get("client") else None
 	amount = fmt_money(doc.get("amount_paid") or 0, currency="INR")
 	notify(
-		business_users(business_id),
+		business_users(business_id, doc.get("gstin")),
 		_("Payment recorded: {0}").format(amount),
 		_("{0} ({1}) paid for {2}{3}.").format(
 			doc.get("payment_type") or _("Payment"), amount, business_name(business_id),

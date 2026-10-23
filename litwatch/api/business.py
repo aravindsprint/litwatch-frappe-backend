@@ -45,6 +45,10 @@ def _attach_gstin(business, gstin, address=None, portal_user_id=None):
 		owner = frappe.db.get_value("GSTIN", gstin, "business_id")
 		if owner and str(owner) != business_id:
 			frappe.throw(_("GSTIN {0} already belongs to Business {1}").format(gstin, owner))
+		if scope.is_individual() and not scope.gstin_allowed(gstin):
+			# an Individual cannot claim a GSTIN someone else holds; firm staff add them to its Users table
+			frappe.throw(_("GSTIN {0} is already registered. Ask the firm to add you to its users.").format(gstin),
+			             frappe.PermissionError)
 		doc = frappe.get_doc("GSTIN", gstin)
 		doc.business_id = business_id
 		if address:
@@ -63,6 +67,7 @@ def _attach_gstin(business, gstin, address=None, portal_user_id=None):
 				"consent_status": "inactive",
 			}
 		).insert(ignore_permissions=True)
+	scope.link_gstin_to_scope_user(doc.name)  # an Individual owns the GSTINs they add
 	return doc
 
 
@@ -215,9 +220,12 @@ def get_businesses():
 		order_by="name asc",
 		limit_page_length=0,
 	)
+	gstin_filters = {"business_id": ["in", allowed]} if allowed is not None else {}
+	if scope.gstin_filter():
+		gstin_filters["name"] = scope.gstin_filter()  # Individual: only their own GSTINs
 	gstins = frappe.get_all(
 		"GSTIN",
-		filters={"business_id": ["in", allowed]} if allowed is not None else None,
+		filters=gstin_filters or None,
 		fields=["name", "business_id", "state", "consent_status", "address", "portal_user_id"],
 		limit_page_length=0,
 	)
@@ -234,12 +242,14 @@ def get_businesses():
 				"users": users_by_gstin.get(g.name, []),
 			}
 		)
-	notice_counts = dict(
-		frappe.db.sql(
-			"""SELECT business_id, COUNT(*) FROM `tabNotice`
-			WHERE IFNULL(business_id, '') != '' GROUP BY business_id"""
+	notice_counts = scope.notice_counts()
+	if notice_counts is None:
+		notice_counts = dict(
+			frappe.db.sql(
+				"""SELECT business_id, COUNT(*) FROM `tabNotice`
+				WHERE IFNULL(business_id, '') != '' GROUP BY business_id"""
+			)
 		)
-	)
 	return [
 		{
 			"businessId": str(b.name),

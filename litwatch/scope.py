@@ -13,17 +13,23 @@ Who is asking
 
 What they see
 -------------
-- GST User found: only the Businesses in its ``businesses`` table, and the
-  GSTINs, Notices, Payments, Review Queue Items, Client Documents, Audit Log
-  entries, sync logs, OTP requests and Adaequare Settings that belong to those
-  Businesses.
+- GST User found, User Type "Consultant": only the Businesses in its
+  ``businesses`` table, and the GSTINs, Notices, Payments, Review Queue Items,
+  Client Documents, Audit Log entries, sync logs, OTP requests and Adaequare
+  Settings that belong to those Businesses.
+- GST User found, User Type "Individual": only the GSTINs whose Users table
+  (GSTIN User) lists them, the Businesses of those GSTINs, and Businesses in
+  their own table that have no GSTIN yet (so a new business can be set up).
+  Notices and Payments of other GSTINs of the same Business stay hidden;
+  notices / payments without a GSTIN follow the Business.
 - No GST User record, but the user is System Manager (firm staff): everything.
 - Anyone else without a GST User record: "GST User ... not found" (HTTP 404),
   the same answer get_clients has always given, so the frontend's existing
   fallback keeps working.
 
 get_scope() returns None for "everything", otherwise a list of Business IDs
-(possibly empty). Background jobs and system code (no request, or
+(possibly empty). get_gstin_scope() returns None unless the request is scoped to
+an Individual, then the list of their GSTINs. Background jobs and system code (no request, or
 ignore_permissions) are never scoped.
 """
 
@@ -33,6 +39,8 @@ from frappe import _
 HEADER = "X-LitWatch-GST-User"
 PARAMS = ("gstUser", "gst_user")
 STAFF_ROLE = "System Manager"
+CONSULTANT = "Consultant"
+INDIVIDUAL = "Individual"
 _CACHE = "litwatch_scope_cache"
 
 
@@ -97,6 +105,78 @@ def _businesses_of(gst_user):
 	)
 
 
+def user_type(gst_user):
+	"""Consultant or Individual (empty counts as Individual)."""
+	return frappe.db.get_value("GST User", gst_user, "user_type") or INDIVIDUAL
+
+
+def _gstins_of(gst_user):
+	"""GSTINs whose Users table lists this GST User."""
+	return sorted(
+		{
+			g
+			for g in frappe.get_all(
+				"GSTIN User",
+				filters={"parenttype": "GSTIN", "parentfield": "users", "user": gst_user},
+				pluck="parent",
+			)
+			if g
+		}
+	)
+
+
+def _individual_scope(gst_user):
+	"""(Business IDs, GSTINs) an Individual may see."""
+	gstins = _gstins_of(gst_user)
+	businesses = {
+		str(b)
+		for b in frappe.get_all("GSTIN", filters={"name": ["in", gstins or ["__none__"]]}, pluck="business_id")
+		if b
+	}
+	own = _businesses_of(gst_user)
+	if own:
+		with_gstin = {
+			str(b)
+			for b in frappe.get_all("GSTIN", filters={"business_id": ["in", own]}, pluck="business_id")
+			if b
+		}
+		businesses |= {b for b in own if b not in with_gstin}
+	return sorted(businesses, key=lambda x: (len(x), x)), gstins
+
+
+def user_scope(gst_user):
+	"""(Business IDs, GSTINs or None) for a GST User, outside any request. GSTINs is None for a
+	Consultant (= every GSTIN of those Businesses). Used for notification recipients."""
+	if user_type(gst_user) == CONSULTANT:
+		return _businesses_of(gst_user), None
+	return _individual_scope(gst_user)
+
+
+def user_can_see(gst_user, business_id=None, gstin=None):
+	"""May this GST User see a record of this Business / GSTIN? (Notice, Payment, notification)"""
+	businesses, gstins = user_scope(gst_user)
+	if gstin and gstins is not None:
+		return str(gstin).upper() in gstins
+	if business_id:
+		return str(business_id) in businesses
+	if gstin:
+		owner = frappe.db.get_value("GSTIN", str(gstin).upper(), "business_id")
+		return bool(owner) and str(owner) in businesses
+	return False
+
+
+def get_gstin_scope():
+	"""None = no GSTIN-level limit (unscoped, or a Consultant); otherwise the Individual's GSTINs."""
+	get_scope()
+	cache = _cache()
+	user = frappe.session.user if getattr(frappe.local, "session", None) else "Guest"
+	return cache.get(("gstins", user, requested_gst_user()))
+
+
+def is_individual():
+	return get_gstin_scope() is not None
+
+
 def get_scope():
 	"""None = everything; otherwise the list of Business IDs the request may see."""
 	cache = _cache()
@@ -111,7 +191,10 @@ def get_scope():
 	elif not gst_user:
 		scope = None
 	elif frappe.db.exists("GST User", gst_user):
-		scope = _businesses_of(gst_user)
+		if user_type(gst_user) == CONSULTANT:
+			scope = _businesses_of(gst_user)
+		else:
+			scope, cache[("gstins",) + key] = _individual_scope(gst_user)
 	elif frappe.db.exists("User", gst_user) and _is_staff(gst_user):
 		scope = None  # firm staff: everything
 	else:
@@ -124,16 +207,55 @@ def get_scope():
 def add_to_scope(business_id):
 	"""Make a just-created Business visible for the rest of this request."""
 	cache = getattr(frappe.local, _CACHE, None) or {}
-	for scope in cache.values():
-		if scope is not None and str(business_id) not in scope:
+	for key, scope in cache.items():
+		if key[0] != "gstins" and scope is not None and str(business_id) not in scope:
 			scope.append(str(business_id))
 
 
+def add_gstin_to_scope(gstin):
+	cache = getattr(frappe.local, _CACHE, None) or {}
+	for key, gstins in cache.items():
+		if key[0] == "gstins" and gstins is not None and gstin not in gstins:
+			gstins.append(gstin)
+
+
 def scope_gstins(scope=None):
+	"""GSTINs the request may see (an Individual: their own; otherwise every GSTIN of the Businesses)."""
+	mine = get_gstin_scope()
+	if mine is not None:
+		return list(mine)
 	scope = get_scope() if scope is None else scope
 	if not scope:
 		return []
 	return frappe.get_all("GSTIN", filters={"business_id": ["in", scope]}, pluck="name")
+
+
+def gstin_filter():
+	"""Extra get_all filter for GSTIN names, or None when there is no GSTIN-level limit."""
+	mine = get_gstin_scope()
+	return None if mine is None else ["in", mine or ["__none__"]]
+
+
+def visible_notices():
+	"""Names of the Notices an Individual may see, or None (no extra limit). For list APIs that use
+	get_all (no permission query): add ["name", "in", ...] to their filters."""
+	mine = get_gstin_scope()
+	if mine is None:
+		return None
+	scope = get_scope() or []
+	names = set()
+	if mine:
+		names |= set(frappe.get_all("Notice", filters={"gstin": ["in", mine]}, pluck="name", limit_page_length=0))
+	if scope:
+		names |= set(
+			frappe.get_all(
+				"Notice",
+				filters={"business_id": ["in", scope], "gstin": ["is", "not set"]},
+				pluck="name",
+				limit_page_length=0,
+			)
+		)
+	return sorted(names)
 
 
 # ---------------------------------------------------------------------------
@@ -149,10 +271,26 @@ def check_business(business_id):
 		frappe.throw(_("Not permitted to access client {0}").format(business_id), frappe.PermissionError)
 
 
+def notice_counts(field="business_id"):
+	"""{value of field: count} over the Notices an Individual may see, or None (use the normal count)."""
+	names = visible_notices()
+	if names is None:
+		return None
+	out = {}
+	if names:
+		for v in frappe.get_all("Notice", filters={"name": ["in", names]}, pluck=field, limit_page_length=0):
+			if v:
+				out[str(v)] = out.get(str(v), 0) + 1
+	return out
+
+
 def gstin_allowed(gstin):
 	scope = get_scope()
 	if scope is None:
 		return True
+	mine = get_gstin_scope()
+	if mine is not None:
+		return str(gstin or "").strip().upper() in mine
 	owner = frappe.db.get_value("GSTIN", str(gstin or "").strip().upper(), "business_id")
 	return bool(owner) and str(owner) in scope
 
@@ -166,6 +304,12 @@ def notice_allowed(business_id=None, gstin=None, scope=None, gstins=None):
 	scope = get_scope() if scope is None else scope
 	if scope is None:
 		return True
+	mine = get_gstin_scope()
+	if mine is not None:
+		# Individual: a notice of a GSTIN follows the GSTIN, one without GSTIN follows the Business
+		if gstin:
+			return str(gstin).strip().upper() in mine
+		return bool(business_id) and str(business_id) in scope
 	if business_id and str(business_id) in scope:
 		return True
 	if gstin:
@@ -187,6 +331,18 @@ def link_business_to_scope_user(business_id):
 	add_to_scope(business_id)
 
 
+def link_gstin_to_scope_user(gstin):
+	"""An Individual who adds a GSTIN is put in its Users table, so it is theirs to see."""
+	gst_user = scope_user()
+	if not is_individual() or not gst_user or not frappe.db.exists("GST User", gst_user):
+		return
+	doc = frappe.get_doc("GSTIN", gstin)
+	if not any(r.user == gst_user for r in doc.get("users") or []):
+		doc.append("users", {"user": gst_user})
+		doc.save(ignore_permissions=True)
+	add_gstin_to_scope(doc.name)
+
+
 # ---------------------------------------------------------------------------
 # Document-level check (called from the controllers' has_permission)
 # ---------------------------------------------------------------------------
@@ -199,10 +355,15 @@ def doc_in_scope(doc):
 	dt = doc.doctype
 	if dt == "Business":
 		return doc.is_new() or str(doc.name) in scope
+	mine = get_gstin_scope()
 	if dt == "GSTIN":
+		if mine is not None:
+			return doc.name in mine or (doc.is_new() and str(doc.business_id or "") in scope)
 		return str(doc.business_id or "") in scope
 	if dt == "Notice":
 		return notice_allowed(doc.get("business_id"), doc.get("gstin"), scope)
+	if dt == "Payment" and mine is not None and doc.get("gstin"):
+		return str(doc.client or "") in scope and str(doc.gstin).upper() in mine
 	if dt in ("Payment", "Review Queue Item", "Client Document", "Audit Log"):
 		return str(doc.get("client") or "") in scope
 	if dt == "GST User":
@@ -241,10 +402,18 @@ def business_query(user=None, doctype=None):
 
 
 def gstin_query(user=None, doctype=None):
+	mine = get_gstin_scope()
+	if mine is not None:
+		return _in("`tabGSTIN`.`name`", mine)
 	return _cond(lambda s: _in("`tabGSTIN`.`business_id`", s))
 
 
 def notice_query(user=None, doctype=None):
+	mine = get_gstin_scope()
+	if mine is not None:
+		return "({} or (ifnull(`tabNotice`.`gstin`, '') = '' and {}))".format(
+			_in("`tabNotice`.`gstin`", mine), _in("`tabNotice`.`business_id`", get_scope() or []))
+
 	def build(s):
 		parts = [_in("`tabNotice`.`business_id`", s)]
 		g = scope_gstins(s)
@@ -258,7 +427,15 @@ def _client_query(table):
 	return lambda user=None, doctype=None: _cond(lambda s: _in(f"`tab{table}`.`client`", s))
 
 
-payment_query = _client_query("Payment")
+def payment_query(user=None, doctype=None):
+	cond = _cond(lambda s: _in("`tabPayment`.`client`", s))
+	mine = get_gstin_scope()
+	if mine is not None:
+		cond = "({} and (ifnull(`tabPayment`.`gstin`, '') = '' or {}))".format(cond, _in("`tabPayment`.`gstin`", mine))
+	return cond
+
+
+
 review_queue_item_query = _client_query("Review Queue Item")
 client_document_query = _client_query("Client Document")
 audit_log_query = _client_query("Audit Log")

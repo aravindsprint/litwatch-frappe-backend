@@ -105,13 +105,14 @@ def open_notices(today=None):
 def deadline_reminders(today=None):
 	today = getdate(today or nowdate())
 	notices = [n for n in open_notices(today) if n["due"] and n["businessId"]]
-	users_by_business = {b: business_users(b) for b in {n["businessId"] for n in notices}}
+	# per Business and GSTIN: an Individual only hears about notices of their own GSTINs
+	users_by_business = {k: business_users(*k) for k in {(n["businessId"], n["gstin"] or None) for n in notices}}
 	prefs = _user_settings({u for us in users_by_business.values() for u in us})
 
 	for n in notices:
 		days_left = (getdate(n["due"]) - today).days
 		bname = business_name(n["businessId"])
-		for user in users_by_business.get(n["businessId"]) or []:
+		for user in users_by_business.get((n["businessId"], n["gstin"] or None)) or []:
 			pref = prefs.get(user) or frappe._dict()
 			reminder_days = settings.reminder_days(pref.get("deadline_reminders"))
 			title = None
@@ -168,8 +169,15 @@ def morning_digest(today=None):
 	from litwatch import scope
 
 	for user in users:
-		mine = set(scope._businesses_of(user)) if frappe.db.exists("GST User", user) else None
-		rows = [n for n in notices if mine is None or n["businessId"] in mine]
+		if frappe.db.exists("GST User", user):
+			businesses, gstins = scope.user_scope(user)
+			businesses = set(businesses)
+			rows = [
+				n for n in notices
+				if (n["gstin"] in gstins if gstins is not None and n["gstin"] else n["businessId"] in businesses)
+			]
+		else:
+			rows = notices
 		due = [n for n in rows if n["due"] and 0 <= (getdate(n["due"]) - today).days <= 7]
 		overdue = [n for n in rows if n["due"] and getdate(n["due"]) < today]
 		unread = frappe.db.count("App Notification", {"user": user, "unread": 1})

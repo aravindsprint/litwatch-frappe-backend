@@ -66,7 +66,7 @@ class TestGstinStatus(FrappeTestCase):
 		if not frappe.db.exists("User", CLIENT):
 			frappe.get_doc({"doctype": "User", "email": CLIENT, "first_name": "Status Client",
 			                "user_type": "Website User", "send_welcome_email": 0}).insert(ignore_permissions=True)
-		frappe.get_doc({"doctype": "GST User", "user_email_id": CLIENT, "businesses": [{"business": cls.biz}]}).insert(
+		frappe.get_doc({"doctype": "GST User", "user_email_id": CLIENT, "user_type": "Consultant", "businesses": [{"business": cls.biz}]}).insert(
 			ignore_permissions=True
 		)
 		frappe.db.commit()
