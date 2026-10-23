@@ -118,6 +118,11 @@ class TestUserType(FrappeTestCase):
 		self.assertIn(IND, [r.user for r in frappe.get_doc("GSTIN", G4).users])
 		as_gst_user(IND)
 		self.assertIn(G4, scope.get_gstin_scope())
+		# leave the fixtures as they were for the other tests (they run in name order)
+		frappe.db.delete("GSTIN User", {"parenttype": "GSTIN", "parent": G4})
+		frappe.db.delete("Business GSTIN", {"gstin": G4})
+		frappe.db.delete("GSTIN", {"name": G4})
+		frappe.db.commit()
 
 	def test_no_self_promotion(self):
 		as_gst_user(IND)
