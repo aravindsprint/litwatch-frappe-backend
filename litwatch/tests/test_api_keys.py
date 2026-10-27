@@ -4,7 +4,7 @@ from frappe.core.doctype.user.user import generate_keys
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils.password import get_decrypted_password
 
-from litwatch.api.api_keys import get_api_secret
+from litwatch.api.api_keys import get_api_secret, get_gsp_client_secret
 
 A, B = "apikeys-a@example.com", "apikeys-b@example.com"
 
@@ -33,3 +33,12 @@ class TestApiKeys(FrappeTestCase):
 		frappe.set_user(B)
 		self.assertEqual({}, get_api_secret(A))  # someone else's: nothing
 		self.assertEqual({}, get_api_secret(B))  # no keys yet
+
+	def test_gsp_client_secret_staff_only(self):
+		name = frappe.db.get_value("Adaequare Settings", {"client_secret": ["is", "set"]}, "name")
+		if not name:
+			self.skipTest("no Adaequare Settings with a Client Secret on this site")
+		secret = get_decrypted_password("Adaequare Settings", name, "client_secret")
+		self.assertEqual(secret, get_gsp_client_secret(name)["client_secret"])
+		frappe.set_user(A)  # not a System Manager
+		self.assertEqual({}, get_gsp_client_secret(name))

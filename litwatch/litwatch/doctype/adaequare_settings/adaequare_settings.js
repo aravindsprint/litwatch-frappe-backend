@@ -13,6 +13,7 @@
 
 	frappe.ui.form.on("Adaequare Settings", {
 		refresh(frm) {
+			show_client_secret(frm);
 			if (frm.is_new() || !frm.doc.business) return;
 
 			frm.add_custom_button(__("Request OTP"), () => request_otp(frm), GROUP);
@@ -22,6 +23,34 @@
 			frm.add_custom_button(__("Reject connection"), () => decide(frm, "reject"), GROUP);
 		},
 	});
+
+	// Client Secret is a Password field (shown as dots). Show the saved value under it, with a
+	// Copy button, for System Managers (litwatch.api.api_keys.get_gsp_client_secret).
+	function show_client_secret(frm) {
+		const field = frm.fields_dict.client_secret;
+		if (!field) return;
+		field.$wrapper.find(".litwatch-client-secret").remove();
+		if (frm.is_new()) return;
+		frappe
+			.call({
+				method: "litwatch.api.api_keys.get_gsp_client_secret",
+				args: { name: frm.doc.name },
+			})
+			.then((r) => {
+				const secret = r.message && r.message.client_secret;
+				if (!secret) return;
+				const $box = $(`
+					<div class="litwatch-client-secret" style="margin-top: 8px">
+						<div style="font-family: var(--font-family-monospace, monospace); padding: 6px 10px;
+							background: var(--control-bg); border-radius: var(--border-radius); user-select: all;
+							word-break: break-all">${frappe.utils.escape_html(secret)}</div>
+						<button class="btn btn-xs btn-default" style="margin-top: 6px">${__("Copy secret")}</button>
+					</div>`);
+				$box.find("button").on("click", () => frappe.utils.copy_to_clipboard(secret));
+				field.$wrapper.append($box);
+			})
+			.catch(() => {});
+	}
 
 	async function business_gstins(frm) {
 		const rows = await frappe.db.get_list("GSTIN", {
