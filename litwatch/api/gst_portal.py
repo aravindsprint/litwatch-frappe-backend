@@ -217,7 +217,14 @@ def _get_token(settings, force=False):
 	data = _json(resp)
 	token = data.get("access_token")
 	if resp.status_code != 200 or not token:
-		frappe.throw(_("Adaequare authentication failed: {0}").format(_error_message(resp, data)), PortalError)
+		msg = _error_message(resp, data)
+		frappe.log_error(
+			title=f"GSP authentication failed: Adaequare Settings {settings.name}",
+			message=f"HTTP {resp.status_code}\nclient_id: {settings.client_id}\n{msg}\n\n{(resp.text or '')[:2000]}",
+		)
+		frappe.db.commit()
+		frappe.throw(_("Adaequare authentication failed for Business {0}: {1}. Check the Client ID and Client Secret "
+		               "on its Adaequare Settings.").format(settings.name, msg), PortalError)
 
 	expires_at = add_to_date(now_datetime(), seconds=cint(data.get("expires_in")) or 3600)
 	# Cache without a full save (no validation of the other settings fields).
