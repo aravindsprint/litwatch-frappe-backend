@@ -263,7 +263,13 @@ def _call(settings, path, params, gstin, username, otp=None, form_typ=None, endp
 		msg = _error_message(resp, data)
 		if "otp" in msg.lower():
 			raise PortalOtpRequired(msg)
-		raise PortalError(msg)
+		# Keep a trace: the request is rolled back after this error, which would also undo the usage count.
+		frappe.log_error(
+			title=f"GST portal error: {endpoint or path} {gstin}",
+			message=f"HTTP {resp.status_code}\nusername: {username}\n{msg}\n\n{(resp.text or '')[:2000]}",
+		)
+		frappe.db.commit()
+		raise PortalError(_("GST portal: {0}").format(msg))
 	return data
 
 
