@@ -184,6 +184,19 @@ def _error_message(resp, data):
 	return msg or f"HTTP {resp.status_code}: {resp.text[:300]}"
 
 
+NO_RECORDS_CODES = ("NOTC_010",)
+
+
+def _no_records(data):
+	"""The portal's "No Records Found." (errorCode NOTC_010) comes with success false, but it means the
+	taxpayer session is active and the list is empty, not a failure."""
+	if not isinstance(data, dict):
+		return False
+	code = str(data.get("errorCode") or data.get("error_cd") or "").upper()
+	msg = str(data.get("message") or "").strip().lower()
+	return code in NO_RECORDS_CODES or msg.startswith("no records found")
+
+
 def _is_error(resp, data):
 	if resp.status_code != 200:
 		return True
@@ -265,6 +278,10 @@ def _call(settings, path, params, gstin, username, otp=None, form_typ=None, endp
 		# GSP bearer token rejected: refresh it once and retry.
 		_get_token(settings, force=True)
 		return _call(settings, path, params, gstin, username, otp, form_typ, endpoint, retry_auth=False)
+
+	if _no_records(data):
+		# The call went through (portal session active): there is just nothing to list.
+		return {"notices": []}
 
 	if _is_error(resp, data):
 		msg = _error_message(resp, data)
