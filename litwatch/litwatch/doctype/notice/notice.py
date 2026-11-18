@@ -13,3 +13,9 @@ class Notice(Document):
 		if not doc_in_scope(self):
 			return False
 		return super().has_permission(permtype, debug=debug, user=user)
+
+	def on_update(self):
+		# PDFs in document_files must be attached to this Notice, or the AI Layer gets 403 on them
+		from litwatch.notice_files import attach_notice_files
+
+		attach_notice_files(self)

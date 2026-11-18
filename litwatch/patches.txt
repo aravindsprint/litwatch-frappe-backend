@@ -20,3 +20,4 @@ litwatch.patches.gstin_ready_status
 litwatch.patches.onboarding_approvals_defaults
 litwatch.patches.onboarding_approvals_defaults #2026-10-14 read raw settings
 litwatch.patches.gst_user_type
+litwatch.patches.attach_notice_files
