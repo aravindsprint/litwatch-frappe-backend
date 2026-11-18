@@ -2,7 +2,7 @@
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
-FNAME = "litwatch-attach-test.pdf"
+FNAME = "litwatch-attach-test.txt"  # not .pdf: Frappe checks real PDF content on upload
 
 
 def _cleanup():
@@ -25,7 +25,7 @@ class TestNoticeFiles(FrappeTestCase):
 	def _upload(self):
 		# like /api/method/upload_file without doctype / docname: attached to nothing
 		return frappe.get_doc({"doctype": "File", "file_name": FNAME, "is_private": 1,
-		                       "content": b"%PDF-1.4 test"}).insert(ignore_permissions=True)
+		                       "content": b"attach test"}).insert(ignore_permissions=True)
 
 	def _attached(self, notice):
 		return frappe.get_all("File", filters={"file_name": FNAME, "attached_to_doctype": "Notice",
