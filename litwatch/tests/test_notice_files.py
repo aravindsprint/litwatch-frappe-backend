@@ -6,7 +6,7 @@ FNAME = "litwatch-attach-test.txt"  # not .pdf: Frappe checks real PDF content o
 
 
 def _cleanup():
-	frappe.db.delete("File", {"file_name": FNAME})
+	frappe.db.delete("File", {"file_name": ["like", "litwatch-attach-test%"]})
 	for n in frappe.get_all("Notice", filters={"business_id": "attach-test"}, pluck="name"):
 		frappe.delete_doc("Notice", n, force=True)
 	frappe.db.commit()
@@ -24,11 +24,14 @@ class TestNoticeFiles(FrappeTestCase):
 
 	def _upload(self):
 		# like /api/method/upload_file without doctype / docname: attached to nothing
-		return frappe.get_doc({"doctype": "File", "file_name": FNAME, "is_private": 1,
-		                       "content": b"attach test"}).insert(ignore_permissions=True)
+		f = frappe.get_doc({"doctype": "File", "file_name": FNAME, "is_private": 1,
+		                    "content": frappe.generate_hash().encode()}).insert(ignore_permissions=True)
+		self.url = f.file_url
+		return f
 
 	def _attached(self, notice):
-		return frappe.get_all("File", filters={"file_name": FNAME, "attached_to_doctype": "Notice",
+		# by file_url, not file_name: Frappe renames a re-upload when the name already exists on disk
+		return frappe.get_all("File", filters={"file_url": self.url, "attached_to_doctype": "Notice",
 		                                      "attached_to_name": notice}, pluck="name")
 
 	def test_unattached_upload_is_claimed_and_shared_file_gets_a_record(self):
