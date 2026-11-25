@@ -19,6 +19,7 @@
   "invite_valid_days",
   "notifications_section",
   "default_reminder_days",
+  "consent_valid_days",
   "consent_expiry_days"
  ],
  "fields": [
@@ -105,6 +106,13 @@
    "description": "Used when a user's Notification Setting has no deadline reminders. Comma-separated days."
   },
   {
+   "fieldname": "consent_valid_days",
+   "fieldtype": "Int",
+   "label": "Consent valid for (days)",
+   "default": "30",
+   "description": "Valid Until of a GSTIN after its OTP is verified / approved: today + this many days. 30 = the most a taxpayer can enable API access on the GST portal, and the life of the Adaequare GSP token."
+  },
+  {
    "fieldname": "consent_expiry_days",
    "fieldtype": "Int",
    "label": "Warn before consent expiry (days)",
@@ -115,7 +123,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-10-14 19:00:00.000000",
+ "modified": "2026-11-25 22:30:00.000000",
  "modified_by": "Administrator",
  "module": "Litwatch",
  "name": "Sync Settings",

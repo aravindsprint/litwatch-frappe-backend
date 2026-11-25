@@ -13,6 +13,7 @@ DEFAULTS = {
 	"invite_valid_days": 14,
 	"default_reminder_days": "7,3,1",
 	"consent_expiry_days": 30,
+	"consent_valid_days": 30,
 }
 
 

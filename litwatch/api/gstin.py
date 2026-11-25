@@ -7,7 +7,7 @@ from datetime import datetime
 
 import frappe
 from frappe import _
-from frappe.utils import add_months, add_to_date, get_datetime, getdate, now_datetime, nowdate
+from frappe.utils import add_days, add_months, add_to_date, get_datetime, getdate, now_datetime, nowdate
 
 from litwatch import scope
 from litwatch.api import gst_portal
@@ -77,7 +77,8 @@ def _save_portal_otp(reg, otp=None):
 
 def _mark_verifying(reg, otp=None):
 	"""OTP verified (or no OTP needed). With "Require GSTIN approval" on (Sync Settings) the GSTIN
-	waits as verifying for approval in Frappe; with it off it is active for 12 months straight away.
+	waits as verifying for approval in Frappe; with it off it is active straight away for consent_valid_days
+	(Sync Settings, default 30).
 	A GSTIN that is already active stays active (its connection was approved before)."""
 	from litwatch import settings
 
@@ -86,16 +87,26 @@ def _mark_verifying(reg, otp=None):
 			reg.consent_status = "verifying"
 		else:
 			reg.consent_status = "active"
-			reg.valid_until = add_months(nowdate(), 12)
+			reg.valid_until = consent_valid_until()
 		reg.rejection_reason = None
 	reg.last_checked = now_datetime()
 	_save_portal_otp(reg, otp)
 
 
+def consent_valid_until(start=None):
+	"""Valid Until of a newly connected GSTIN: start + Sync Settings consent_valid_days (default 30).
+	30 days is the longest a taxpayer can enable API access on the GST portal, and the life of the
+	Adaequare GSP token (expires_in: 30 days, seen on every authenticate since Oct 2026)."""
+	from litwatch import settings
+
+	days = int(settings.get("consent_valid_days") or 30)
+	return add_days(start or nowdate(), max(days, 1))
+
+
 def _activate(reg):
-	"""Approved: consent active for 12 months. The saved OTP is kept."""
+	"""Approved: consent active for consent_valid_days (default 30). The saved OTP is kept."""
 	reg.consent_status = "active"
-	reg.valid_until = add_months(nowdate(), 12)
+	reg.valid_until = consent_valid_until()
 	reg.last_checked = now_datetime()
 	reg.rejection_reason = None
 	reg.save(ignore_permissions=True)
@@ -438,7 +449,7 @@ def _check_approver():
 
 @frappe.whitelist(methods=["POST"])
 def approve_gstin_connection(gstin=None):
-	"""verifying -> active (consent valid for 12 months). Notifies the business's users."""
+	"""verifying -> active (consent valid for consent_valid_days, default 30). Notifies the business's users."""
 	_check_approver()
 	gstin = str(gstin or _pick(_request_params(), "gstin") or "").strip().upper()
 	reg = _get_registration(gstin)

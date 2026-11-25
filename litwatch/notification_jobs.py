@@ -139,7 +139,9 @@ def deadline_reminders(today=None):
 
 def expire_and_warn_consent(today=None):
 	today = getdate(today or nowdate())
-	warn = {int(settings.get("consent_expiry_days") or 30), 7, 1}
+	valid = int(settings.get("consent_valid_days") or 30)
+	# warn days shorter than the validity itself (a 30-day warning on a 30-day consent would fire at once)
+	warn = {d for d in {int(settings.get("consent_expiry_days") or 30), 7, 1} if 0 < d < valid}
 	for g in frappe.get_all("GSTIN", filters={"consent_status": "active", "valid_until": ["is", "set"]},
 	                        fields=["name", "business_id", "valid_until"]):
 		days_left = (getdate(g.valid_until) - today).days
