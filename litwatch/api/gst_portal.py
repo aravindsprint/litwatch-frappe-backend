@@ -51,6 +51,27 @@ class PortalOtpRequired(PortalError):
 	"""The portal wants an OTP (none sent, a wrong one, or the session expired)."""
 
 
+class PortalApiAccessDisabled(PortalError):
+	"""The taxpayer has not enabled API access on the GST portal (errorCode AUTH002), so no OTP can be
+	sent and no data fetched until they do."""
+
+
+API_ACCESS_DISABLED_CODES = ("AUTH002",)
+API_ACCESS_STEPS = (
+	"Ask the taxpayer to log in at https://services.gst.gov.in, open My Profile > Manage API Access, "
+	"choose Yes, pick a duration (up to 30 days) and Confirm. Then send the OTP again."
+)
+
+
+def _api_access_disabled(data, msg):
+	code = str((data or {}).get("errorCode") or "").upper() if isinstance(data, dict) else ""
+	return code in API_ACCESS_DISABLED_CODES or "disabled api access" in (msg or "").lower()
+
+
+def api_access_message(gstin):
+	return _("GST API access is not enabled for {0} on the GST portal. {1}").format(gstin, API_ACCESS_STEPS)
+
+
 # ---------------------------------------------------------------------------
 # Settings helpers
 # ---------------------------------------------------------------------------
@@ -285,6 +306,9 @@ def _call(settings, path, params, gstin, username, otp=None, form_typ=None, endp
 
 	if _is_error(resp, data):
 		msg = _error_message(resp, data)
+		if _api_access_disabled(data, msg):
+			# a known taxpayer-side setting, not a fault: no Error Log, a message that says what to do
+			raise PortalApiAccessDisabled(api_access_message(gstin))
 		if "otp" in msg.lower():
 			raise PortalOtpRequired(msg)
 		# Keep a trace: the request is rolled back after this error, which would also undo the usage count.

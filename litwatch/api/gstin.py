@@ -602,6 +602,27 @@ def _import_portal_notice(reg, otp, item):
 	return notice.name
 
 
+def _end_session(reg, title, detail):
+	"""Mark the GSTIN expired, forget its OTP and tell its users why."""
+	from frappe.utils.password import remove_encrypted_password
+
+	from litwatch.notifications import gstin_recipients, notify
+
+	reg.db_set({"consent_status": "expired", "portal_otp": None}, update_modified=False)
+	remove_encrypted_password("GSTIN", reg.name, "portal_otp")
+	gst_portal.store_otp(reg.name, None)
+	notify(
+		gstin_recipients(reg.name, reg.business_id),
+		title,
+		detail,
+		kind="sync",
+		client=str(reg.business_id) if reg.business_id else None,
+		reference_doctype="GSTIN",
+		reference_name=reg.name,
+	)
+	frappe.db.commit()
+
+
 def _sync_one(reg, sync_run=None):
 	"""Pull notices for one registration from the GST portal, store the new ones
 	as Notice records (with their PDFs attached) and write GST Sync Log.
@@ -613,6 +634,10 @@ def _sync_one(reg, sync_run=None):
 
 	try:
 		portal_notices = gst_portal.list_notices(reg.name, reg.portal_user_id, otp=otp) or []
+	except gst_portal.PortalApiAccessDisabled as e:
+		# The taxpayer switched API access off (or it lapsed): same as an ended session, with the steps
+		_end_session(reg, _("Enable GST API access for {0}").format(reg.name), str(e))
+		raise
 	except gst_portal.PortalOtpRequired:
 		# The portal session is over: the user must reconnect with a fresh OTP.
 		from frappe.utils.password import remove_encrypted_password
@@ -649,7 +674,7 @@ def _sync_one(reg, sync_run=None):
 		try:
 			_import_portal_notice(reg, otp, item)
 			found += 1
-		except (gst_portal.CallCapReached, gst_portal.PortalOtpRequired):
+		except (gst_portal.CallCapReached, gst_portal.PortalOtpRequired, gst_portal.PortalApiAccessDisabled):
 			frappe.db.rollback(save_point="import_notice")
 			raise
 		except Exception as e:

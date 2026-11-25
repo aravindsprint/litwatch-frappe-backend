@@ -36,3 +36,14 @@ class TestGstPortal(FrappeTestCase):
 				self._call({"success": False, "message": "Invalid GSTIN", "errorCode": "GSTN_001"})
 			with self.assertRaises(gst_portal.PortalOtpRequired):
 				self._call({"success": False, "message": "OTP is required"})
+
+	def test_api_access_disabled(self):
+		body = {"success": False, "status": 500, "errorCode": "AUTH002",
+		        "message": "GSTIN/UIN/Temporary ID: 33AALCT1012H1ZR has disabled API access, or your GSP/ASP name has "
+		                   "not been allowed access. The taxpayer may login to the GST Common Portal and update the "
+		                   "'Manage API Access' settings"}
+		with patch.object(gst_portal.frappe, "log_error") as log:
+			with self.assertRaises(gst_portal.PortalApiAccessDisabled) as e:
+				self._call(body)
+			log.assert_not_called()  # a known taxpayer setting, not an error to log
+		self.assertIn("Manage API Access", str(e.exception))
