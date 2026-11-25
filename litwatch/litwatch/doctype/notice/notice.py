@@ -14,6 +14,12 @@ class Notice(Document):
 			return False
 		return super().has_permission(permtype, debug=debug, user=user)
 
+	def validate(self):
+		# An API save may not drop the notice's PDFs (document_files); see notice_files.keep_document_files
+		from litwatch.notice_files import keep_document_files
+
+		keep_document_files(self)
+
 	def on_update(self):
 		# PDFs in document_files must be attached to this Notice, or the AI Layer gets 403 on them
 		from litwatch.notice_files import attach_notice_files

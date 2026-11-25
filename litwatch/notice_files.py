@@ -11,6 +11,8 @@ the same stored file is added (no copy of the content).
 
 import frappe
 
+DESK_SAVE = "frappe.desk.form.save.savedocs"
+
 
 def attach_notice_files(notice):
 	urls = {(row.file_name or "").strip() for row in notice.get("document_files") or []}
@@ -49,3 +51,29 @@ def _attach(notice, url):
 		"attached_to_name": notice.name,
 		"attached_to_field": "document_files",
 	}).insert(ignore_permissions=True)
+
+
+def removal_allowed():
+	"""Rows may be removed from the desk form or through remove_notice_document, never by an API save."""
+	return bool(frappe.flags.allow_document_file_removal) or (frappe.form_dict or {}).get("cmd") == DESK_SAVE
+
+
+def keep_document_files(notice):
+	"""An API save that sends document_files without some existing rows (e.g. saving a document request's
+	upload together with a stale list) must not drop the notice's PDFs: put the missing rows back.
+	Deliberate removal: litwatch.api.notices.remove_notice_document, or the desk form."""
+	if notice.is_new() or removal_allowed():
+		return
+	before = notice.get_doc_before_save()
+	if not before:
+		return
+	current = {(r.file_name or "").strip() for r in notice.get("document_files") or []}
+	kept = []
+	for row in before.get("document_files") or []:
+		url = (row.file_name or "").strip()
+		if url and url not in current:
+			notice.append("document_files", {"file_name": url})
+			current.add(url)
+			kept.append(url)
+	if kept:
+		frappe.logger("litwatch").info({"notice": notice.name, "kept_document_files": kept})

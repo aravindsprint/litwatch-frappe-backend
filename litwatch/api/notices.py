@@ -179,3 +179,24 @@ def get_client_notices(
 		notices.append(item)
 
 	return {"total": total, "notices": notices}
+
+
+@frappe.whitelist(methods=["POST"])
+def remove_notice_document(notice=None, file_url=None):
+	"""Remove one PDF from a Notice's document_files on purpose (an ordinary save keeps them all).
+	The File itself stays in the file store."""
+	if not notice or not file_url:
+		frappe.throw(_("notice and file_url are required"))
+	doc = frappe.get_doc("Notice", notice)
+	doc.check_permission("write")
+	rows = [r for r in doc.document_files if (r.file_name or "").strip() == str(file_url).strip()]
+	if not rows:
+		frappe.throw(_("{0} is not a document of {1}").format(file_url, notice), frappe.DoesNotExistError)
+	for r in rows:
+		doc.remove(r)
+	frappe.flags.allow_document_file_removal = True
+	try:
+		doc.save()
+	finally:
+		frappe.flags.allow_document_file_removal = False
+	return {"notice": doc.name, "removed": file_url, "documentFiles": [r.file_name for r in doc.document_files]}
