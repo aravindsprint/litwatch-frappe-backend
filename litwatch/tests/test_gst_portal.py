@@ -47,3 +47,18 @@ class TestGstPortal(FrappeTestCase):
 				self._call(body)
 			log.assert_not_called()  # a known taxpayer setting, not an error to log
 		self.assertIn("Manage API Access", str(e.exception))
+
+	def test_portal_errors_reach_server_messages(self):
+		# A bare raise only sends exc_type; the text must also go out in _server_messages
+		# (the 417 body), because production does not send the `exception` field.
+		from litwatch.api import gstin as gstin_api
+
+		msg = gst_portal.api_access_message("33AAHCV1119K1ZE")
+		frappe.local.message_log = []
+		with self.assertRaises(gst_portal.PortalApiAccessDisabled):
+			with gstin_api._portal_errors_shown():
+				raise gst_portal.PortalApiAccessDisabled(msg)
+		logged = [m.get("message") if isinstance(m, dict) else frappe.parse_json(m).get("message")
+		          for m in frappe.local.message_log]
+		self.assertIn(msg, logged)
+		frappe.local.message_log = []

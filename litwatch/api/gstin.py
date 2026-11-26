@@ -1,6 +1,7 @@
 # apps/litwatch/litwatch/api/gstin.py
 
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 from datetime import datetime
@@ -43,6 +44,17 @@ def _pick(params, *keys):
 		if params.get(k) not in (None, ""):
 			return params[k]
 	return None
+
+
+@contextmanager
+def _portal_errors_shown():
+	"""Re-raise a GST portal error through frappe.throw so its text goes back in `_server_messages`.
+	A bare raise only sends `exc_type` (the text is in `exception`, which Frappe drops unless tracebacks
+	are allowed), so the frontend got the code but not the message or the steps."""
+	try:
+		yield
+	except gst_portal.PortalError as e:
+		frappe.throw(str(e), exc=type(e), title=_("GST portal"))
 
 
 def _get_registration(gstin, ptype="write"):
@@ -303,7 +315,8 @@ def connect_gstin(gstin=None, portalUserId=None):
 	reg = _get_registration(gstin)
 	_check_can_connect(reg)
 
-	result = gst_portal.request_otp(gstin, portalUserId)
+	with _portal_errors_shown():
+		result = gst_portal.request_otp(gstin, portalUserId)
 	reg.portal_user_id = portalUserId
 
 	if result["session_active"]:
@@ -354,7 +367,9 @@ def verify_gstin_otp(gstin=None, otpRequestId=None, otp=None):
 		frappe.db.commit()
 		frappe.throw(_("OTP request {0} has expired. Please resend the OTP.").format(otpRequestId))
 
-	if not gst_portal.verify_otp(gstin, reg.portal_user_id, otp):
+	with _portal_errors_shown():
+		verified = gst_portal.verify_otp(gstin, reg.portal_user_id, otp)
+	if not verified:
 		frappe.db.commit()  # keep the API usage count for the failed attempt
 		frappe.throw(_("Invalid OTP"))
 
@@ -380,7 +395,8 @@ def resend_gstin_otp(gstin=None):
 
 	_check_can_connect(reg)
 
-	result = gst_portal.request_otp(gstin, reg.portal_user_id)
+	with _portal_errors_shown():
+		result = gst_portal.request_otp(gstin, reg.portal_user_id)
 	if result["session_active"]:
 		_mark_verifying(reg)
 		otp_request_id = _new_otp_request(gstin, result["sent_to"], status="verified")
@@ -714,15 +730,16 @@ def sync_gstin_notices(gstin=None):
 	if reg.consent_status != "active":
 		frappe.throw(_("GSTIN {0} has no active consent. Connect it first.").format(gstin))
 
-	try:
-		result = _sync_one(reg)
-		frappe.db.commit()
-		return result
-	except Exception as e:
-		frappe.db.rollback()
-		_write_sync_log(gstin, 0, 0, "failed", error=str(e)[:1000])
-		frappe.db.commit()
-		raise
+	with _portal_errors_shown():
+		try:
+			result = _sync_one(reg)
+			frappe.db.commit()
+			return result
+		except Exception as e:
+			frappe.db.rollback()
+			_write_sync_log(gstin, 0, 0, "failed", error=str(e)[:1000])
+			frappe.db.commit()
+			raise
 
 
 def run_sync_job(gstin, run_id=None):
